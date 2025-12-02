@@ -10,17 +10,36 @@ import (
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 )
 
+// Default service name suffixes
+const (
+	defaultHeadlessSuffix = "-hl"
+	defaultWriteSuffix    = "-write"
+	defaultReadSuffix     = "-read"
+)
+
 // Service name helpers
 func headlessServiceName(cluster *memgraphv1alpha1.MemgraphCluster) string {
-	return cluster.Name + "-hl"
+	suffix := defaultHeadlessSuffix
+	if cluster.Spec.ServiceNames != nil && cluster.Spec.ServiceNames.HeadlessSuffix != "" {
+		suffix = cluster.Spec.ServiceNames.HeadlessSuffix
+	}
+	return cluster.Name + suffix
 }
 
 func writeServiceName(cluster *memgraphv1alpha1.MemgraphCluster) string {
-	return cluster.Name + "-write"
+	suffix := defaultWriteSuffix
+	if cluster.Spec.ServiceNames != nil && cluster.Spec.ServiceNames.WriteSuffix != "" {
+		suffix = cluster.Spec.ServiceNames.WriteSuffix
+	}
+	return cluster.Name + suffix
 }
 
 func readServiceName(cluster *memgraphv1alpha1.MemgraphCluster) string {
-	return cluster.Name + "-read"
+	suffix := defaultReadSuffix
+	if cluster.Spec.ServiceNames != nil && cluster.Spec.ServiceNames.ReadSuffix != "" {
+		suffix = cluster.Spec.ServiceNames.ReadSuffix
+	}
+	return cluster.Name + suffix
 }
 
 // buildHeadlessService creates the headless service for StatefulSet DNS

@@ -77,7 +77,7 @@ func (rm *ReplicationManager) ConfigureReplication(ctx context.Context, cluster 
 		}
 
 		replicaName := rm.getReplicaName(pod.Name)
-		replicaHost := rm.getPodFQDN(pod.Name, cluster.Name, cluster.Namespace)
+		replicaHost := getPodFQDN(pod.Name, cluster)
 
 		// Ensure replica role
 		if err := rm.ensureReplicaRole(ctx, cluster.Namespace, pod.Name); err != nil {
@@ -266,8 +266,9 @@ func (rm *ReplicationManager) getReplicaName(podName string) string {
 }
 
 // getPodFQDN returns the fully qualified domain name for a pod
-func (rm *ReplicationManager) getPodFQDN(podName, clusterName, namespace string) string {
+// Uses the headless service name from the cluster spec
+func getPodFQDN(podName string, cluster *memgraphv1alpha1.MemgraphCluster) string {
 	// Format: pod-name.headless-service.namespace.svc.cluster.local
-	headlessService := clusterName + "-headless"
-	return fmt.Sprintf("%s.%s.%s.svc.cluster.local", podName, headlessService, namespace)
+	headlessService := headlessServiceName(cluster)
+	return fmt.Sprintf("%s.%s.%s.svc.cluster.local", podName, headlessService, cluster.Namespace)
 }

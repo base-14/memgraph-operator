@@ -1102,6 +1102,26 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              serviceNames:
+                description: ServiceNames allows customizing the generated service
+                  names
+                properties:
+                  headlessSuffix:
+                    default: -hl
+                    description: 'HeadlessSuffix is the suffix for the headless service
+                      (default: "-hl")'
+                    type: string
+                  readSuffix:
+                    default: -read
+                    description: 'ReadSuffix is the suffix for the read service (default:
+                      "-read")'
+                    type: string
+                  writeSuffix:
+                    default: -write
+                    description: 'WriteSuffix is the suffix for the write service
+                      (default: "-write")'
+                    type: string
+                type: object
               snapshot:
                 description: Snapshot defines snapshot and backup configuration
                 properties:

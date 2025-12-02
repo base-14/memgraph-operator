@@ -78,6 +78,28 @@ type MemgraphClusterSpec struct {
 	// Affinity for pod scheduling
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// ServiceNames allows customizing the generated service names
+	// +optional
+	ServiceNames *ServiceNamesSpec `json:"serviceNames,omitempty"`
+}
+
+// ServiceNamesSpec allows customizing the suffixes for generated services
+type ServiceNamesSpec struct {
+	// HeadlessSuffix is the suffix for the headless service (default: "-hl")
+	// +kubebuilder:default="-hl"
+	// +optional
+	HeadlessSuffix string `json:"headlessSuffix,omitempty"`
+
+	// WriteSuffix is the suffix for the write service (default: "-write")
+	// +kubebuilder:default="-write"
+	// +optional
+	WriteSuffix string `json:"writeSuffix,omitempty"`
+
+	// ReadSuffix is the suffix for the read service (default: "-read")
+	// +kubebuilder:default="-read"
+	// +optional
+	ReadSuffix string `json:"readSuffix,omitempty"`
 }
 
 // StorageSpec defines the persistent storage configuration

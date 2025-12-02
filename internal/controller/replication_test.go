@@ -34,35 +34,42 @@ func TestReplicationManager_getReplicaName(t *testing.T) {
 	}
 }
 
-func TestReplicationManager_getPodFQDN(t *testing.T) {
-	rm := &ReplicationManager{}
-
+func TestGetPodFQDN(t *testing.T) {
 	tests := []struct {
-		podName     string
-		clusterName string
-		namespace   string
-		expected    string
+		name     string
+		podName  string
+		cluster  *memgraphv1alpha1.MemgraphCluster
+		expected string
 	}{
 		{
-			"my-cluster-0",
-			"my-cluster",
-			"default",
-			"my-cluster-0.my-cluster-headless.default.svc.cluster.local",
+			name:    "default suffix",
+			podName: "my-cluster-0",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-cluster", Namespace: "default"},
+			},
+			expected: "my-cluster-0.my-cluster-hl.default.svc.cluster.local",
 		},
 		{
-			"prod-db-1",
-			"prod-db",
-			"production",
-			"prod-db-1.prod-db-headless.production.svc.cluster.local",
+			name:    "custom suffix",
+			podName: "prod-db-1",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "prod-db", Namespace: "production"},
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					ServiceNames: &memgraphv1alpha1.ServiceNamesSpec{
+						HeadlessSuffix: "-headless",
+					},
+				},
+			},
+			expected: "prod-db-1.prod-db-headless.production.svc.cluster.local",
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.podName, func(t *testing.T) {
-			result := rm.getPodFQDN(tt.podName, tt.clusterName, tt.namespace)
+		t.Run(tt.name, func(t *testing.T) {
+			result := getPodFQDN(tt.podName, tt.cluster)
 			if result != tt.expected {
-				t.Errorf("getPodFQDN(%s, %s, %s) = %s, want %s",
-					tt.podName, tt.clusterName, tt.namespace, result, tt.expected)
+				t.Errorf("getPodFQDN(%s, cluster) = %s, want %s",
+					tt.podName, result, tt.expected)
 			}
 		})
 	}
