@@ -1,0 +1,1 @@
+// Copyright 2025 Base14. See LICENSE file for details.

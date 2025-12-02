@@ -1,0 +1,47 @@
+apiVersion: memgraph.base14.io/v1alpha1
+kind: MemgraphCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: memgraph-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: memgraphcluster-sample
+spec:
+  # Total instances - one becomes MAIN (write), others become REPLICA (read)
+  replicas: 3
+
+  # Container image
+  image: memgraph/memgraph:2.21.0
+
+  # Resources (same for all instances since any can become MAIN)
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+  # Persistent storage
+  storage:
+    size: 10Gi
+
+  # Memgraph configuration
+  config:
+    logLevel: WARNING
+    memoryLimit: 3000
+    walFlushEveryNTx: 100000
+
+  # Replication settings
+  replication:
+    mode: ASYNC
+
+  # High Availability (automatic failover) - NOT YET IMPLEMENTED
+  highAvailability:
+    enabled: false
+    failoverTimeoutSeconds: 30
+
+  # Snapshot configuration
+  snapshot:
+    enabled: true
+    schedule: "*/15 * * * *"
+    retentionCount: 5
