@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
 
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 	"github.com/base14/memgraph-operator/internal/memgraph"
@@ -17,14 +18,21 @@ import (
 
 // ReplicationManager handles Memgraph replication configuration
 type ReplicationManager struct {
-	client *memgraph.Client
+	client   *memgraph.Client
+	recorder record.EventRecorder
 }
 
 // NewReplicationManager creates a new ReplicationManager
-func NewReplicationManager(client *memgraph.Client) *ReplicationManager {
+func NewReplicationManager(client *memgraph.Client, recorder record.EventRecorder) *ReplicationManager {
 	return &ReplicationManager{
-		client: client,
+		client:   client,
+		recorder: recorder,
 	}
+}
+
+// Client returns the underlying memgraph client
+func (rm *ReplicationManager) Client() *memgraph.Client {
+	return rm.client
 }
 
 // ConfigureReplication sets up replication for the cluster
@@ -47,7 +55,7 @@ func (rm *ReplicationManager) ConfigureReplication(ctx context.Context, cluster 
 	}
 
 	// Check and configure the MAIN instance
-	if err := rm.ensureMainRole(ctx, cluster.Namespace, writeInstance, log); err != nil {
+	if err := rm.ensureMainRole(ctx, cluster, writeInstance, log); err != nil {
 		return fmt.Errorf("failed to ensure main role on %s: %w", writeInstance, err)
 	}
 
@@ -98,6 +106,8 @@ func (rm *ReplicationManager) ConfigureReplication(ctx context.Context, cluster 
 					zap.Error(err))
 				continue
 			}
+			rm.recorder.Event(cluster, corev1.EventTypeNormal, EventReasonReplicaRegistered,
+				fmt.Sprintf("Replica %s registered with main %s", replicaName, writeInstance))
 		}
 
 		registeredCount++
@@ -115,9 +125,14 @@ func (rm *ReplicationManager) ConfigureReplication(ctx context.Context, cluster 
 }
 
 // ensureMainRole ensures the given pod is configured as MAIN
-func (rm *ReplicationManager) ensureMainRole(ctx context.Context, namespace, podName string, log *zap.Logger) error {
+func (rm *ReplicationManager) ensureMainRole(
+	ctx context.Context,
+	cluster *memgraphv1alpha1.MemgraphCluster,
+	podName string,
+	log *zap.Logger,
+) error {
 	// Check current role
-	currentRole, err := rm.client.GetReplicationRole(ctx, namespace, podName)
+	currentRole, err := rm.client.GetReplicationRole(ctx, cluster.Namespace, podName)
 	if err != nil {
 		log.Debug("could not get current role, will set to MAIN",
 			zap.String("pod", podName),
@@ -131,7 +146,12 @@ func (rm *ReplicationManager) ensureMainRole(ctx context.Context, namespace, pod
 	log.Info("setting replication role to MAIN",
 		zap.String("pod", podName),
 		zap.String("previousRole", currentRole))
-	return rm.client.SetReplicationRole(ctx, namespace, podName, true)
+	if err := rm.client.SetReplicationRole(ctx, cluster.Namespace, podName, true); err != nil {
+		return err
+	}
+	rm.recorder.Event(cluster, corev1.EventTypeNormal, EventReasonMainInstanceConfigured,
+		fmt.Sprintf("Instance %s configured as MAIN", podName))
+	return nil
 }
 
 // ensureReplicaRole ensures the given pod is configured as REPLICA
@@ -174,6 +194,9 @@ func (rm *ReplicationManager) cleanupStaleReplicas(ctx context.Context, cluster 
 				log.Error("failed to unregister stale replica",
 					zap.String("replica", replica.Name),
 					zap.Error(err))
+			} else {
+				rm.recorder.Event(cluster, corev1.EventTypeNormal, EventReasonReplicaUnregistered,
+					fmt.Sprintf("Stale replica %s unregistered from main", replica.Name))
 			}
 		}
 	}
@@ -205,7 +228,15 @@ func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluste
 			log.Warn("unhealthy replica detected",
 				zap.String("replica", replica.Name),
 				zap.String("status", replica.Status))
+			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaUnhealthy,
+				fmt.Sprintf("Replica %s is unhealthy: %s", replica.Name, replica.Status))
 		}
+	}
+
+	// Emit event if all replicas are healthy
+	if health.HealthyReplicas == health.TotalReplicas && health.TotalReplicas > 0 {
+		rm.recorder.Event(cluster, corev1.EventTypeNormal, EventReasonReplicationHealthy,
+			fmt.Sprintf("All %d replicas are healthy", health.TotalReplicas))
 	}
 
 	return health, nil
@@ -213,13 +244,25 @@ func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluste
 
 // HandleMainFailover handles failover when the main instance becomes unavailable
 // This is called when HighAvailability is enabled and the main is detected as down
-func (rm *ReplicationManager) HandleMainFailover(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, failedMain string, log *zap.Logger) (string, error) {
+func (rm *ReplicationManager) HandleMainFailover(
+	ctx context.Context,
+	cluster *memgraphv1alpha1.MemgraphCluster,
+	pods []corev1.Pod,
+	failedMain string,
+	log *zap.Logger,
+) (string, error) {
 	if cluster.Spec.HighAvailability == nil || !cluster.Spec.HighAvailability.Enabled {
 		return "", fmt.Errorf("high availability is not enabled")
 	}
 
+	rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonMainInstanceFailed,
+		fmt.Sprintf("Main instance %s has failed", failedMain))
+
 	log.Info("initiating failover from failed main",
 		zap.String("failedMain", failedMain))
+
+	rm.recorder.Event(cluster, corev1.EventTypeNormal, EventReasonFailoverStarted,
+		fmt.Sprintf("Initiating failover from %s", failedMain))
 
 	// Get ready pods excluding the failed main
 	var candidates []corev1.Pod
@@ -230,25 +273,35 @@ func (rm *ReplicationManager) HandleMainFailover(ctx context.Context, cluster *m
 	}
 
 	if len(candidates) == 0 {
+		rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonFailoverFailed,
+			"No healthy candidates available for failover")
 		return "", fmt.Errorf("no healthy candidates available for failover")
 	}
 
 	// Check if preferred main is available
+	var newMain string
 	if cluster.Spec.HighAvailability.PreferredMain != "" {
 		for _, pod := range candidates {
 			if pod.Name == cluster.Spec.HighAvailability.PreferredMain {
 				log.Info("promoting preferred main",
 					zap.String("pod", pod.Name))
-				return pod.Name, nil
+				newMain = pod.Name
+				break
 			}
 		}
 	}
 
 	// Otherwise, promote the first healthy replica
-	newMain := candidates[0].Name
+	if newMain == "" {
+		newMain = candidates[0].Name
+	}
+
 	log.Info("promoting replica to main",
 		zap.String("newMain", newMain),
 		zap.String("failedMain", failedMain))
+
+	rm.recorder.Event(cluster, corev1.EventTypeNormal, EventReasonFailoverCompleted,
+		fmt.Sprintf("Failover completed: %s promoted to main", newMain))
 
 	return newMain, nil
 }

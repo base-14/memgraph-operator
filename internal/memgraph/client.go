@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -113,6 +114,22 @@ type ReplicaInfo struct {
 	Status string
 }
 
+// StorageInfo contains storage statistics from SHOW STORAGE INFO
+type StorageInfo struct {
+	Name                   string
+	VertexCount            int64
+	EdgeCount              int64
+	AverageDegree          float64
+	MemoryRes              int64 // bytes
+	PeakMemoryRes          int64 // bytes
+	DiskUsage              int64 // bytes
+	MemoryTracked          int64 // bytes
+	AllocationLimit        int64 // bytes
+	UnreleasedDeltaObjects int64
+	StorageMode            string
+	IsolationLevel         string
+}
+
 // ShowReplicas returns the list of registered replicas from the main instance
 func (c *Client) ShowReplicas(ctx context.Context, namespace, mainPodName string) ([]ReplicaInfo, error) {
 	query := "SHOW REPLICAS;"
@@ -169,6 +186,18 @@ func (c *Client) Ping(ctx context.Context, namespace, podName string) error {
 	return nil
 }
 
+// GetStorageInfo returns storage statistics from the instance
+func (c *Client) GetStorageInfo(ctx context.Context, namespace, podName string) (*StorageInfo, error) {
+	query := "SHOW STORAGE INFO;"
+
+	output, err := c.ExecuteQuery(ctx, namespace, podName, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get storage info: %w", err)
+	}
+
+	return parseStorageInfoOutput(output), nil
+}
+
 // execInPod executes a command in a pod container
 func (c *Client) execInPod(ctx context.Context, namespace, podName, container string, cmd []string, stdin *strings.Reader) (string, string, error) {
 	req := c.clientset.CoreV1().RESTClient().Post().
@@ -206,6 +235,100 @@ func (c *Client) execInPod(ctx context.Context, namespace, podName, container st
 	}
 
 	return stdout.String(), stderr.String(), nil
+}
+
+// parseStorageInfoOutput parses the output of SHOW STORAGE INFO command
+// Output format is a table with | storage info | value | columns
+func parseStorageInfoOutput(output string) *StorageInfo {
+	info := &StorageInfo{}
+
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "+") {
+			continue
+		}
+
+		// Parse table row: | storage info | value |
+		if strings.HasPrefix(line, "|") {
+			parts := strings.Split(line, "|")
+			if len(parts) >= 3 {
+				key := strings.TrimSpace(parts[1])
+				value := strings.TrimSpace(parts[2])
+
+				switch key {
+				case "name":
+					info.Name = value
+				case "vertex_count":
+					info.VertexCount, _ = strconv.ParseInt(value, 10, 64)
+				case "edge_count":
+					info.EdgeCount, _ = strconv.ParseInt(value, 10, 64)
+				case "average_degree":
+					info.AverageDegree, _ = strconv.ParseFloat(value, 64)
+				case "memory_res":
+					info.MemoryRes = parseMemoryValue(value)
+				case "peak_memory_res":
+					info.PeakMemoryRes = parseMemoryValue(value)
+				case "disk_usage":
+					info.DiskUsage = parseMemoryValue(value)
+				case "memory_tracked":
+					info.MemoryTracked = parseMemoryValue(value)
+				case "allocation_limit":
+					info.AllocationLimit = parseMemoryValue(value)
+				case "unreleased_delta_objects":
+					info.UnreleasedDeltaObjects, _ = strconv.ParseInt(value, 10, 64)
+				case "storage_mode":
+					info.StorageMode = value
+				case "global_isolation_level":
+					info.IsolationLevel = value
+				}
+			}
+		}
+	}
+
+	return info
+}
+
+// parseMemoryValue parses memory values that may have units (e.g., "1.5 GiB", "512 MiB")
+func parseMemoryValue(value string) int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+
+	// Try parsing as plain number first
+	if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return n
+	}
+
+	// Parse values with units
+	parts := strings.Fields(value)
+	if len(parts) < 1 {
+		return 0
+	}
+
+	num, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return 0
+	}
+
+	if len(parts) >= 2 {
+		unit := strings.ToUpper(parts[1])
+		switch unit {
+		case "B", "BYTES":
+			return int64(num)
+		case "KB", "KIB":
+			return int64(num * 1024)
+		case "MB", "MIB":
+			return int64(num * 1024 * 1024)
+		case "GB", "GIB":
+			return int64(num * 1024 * 1024 * 1024)
+		case "TB", "TIB":
+			return int64(num * 1024 * 1024 * 1024 * 1024)
+		}
+	}
+
+	return int64(num)
 }
 
 // parseShowReplicasOutput parses the output of SHOW REPLICAS command

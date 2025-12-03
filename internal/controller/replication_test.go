@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 )
@@ -122,7 +123,10 @@ func TestReplicationManager_getReadyPodsSorted(t *testing.T) {
 }
 
 func TestReplicationManager_HandleMainFailover(t *testing.T) {
-	rm := &ReplicationManager{}
+	fakeRecorder := record.NewFakeRecorder(10)
+	rm := &ReplicationManager{
+		recorder: fakeRecorder,
+	}
 
 	tests := []struct {
 		name         string

@@ -250,16 +250,29 @@ func (r *MemgraphClusterReconciler) reconcileValidation(ctx context.Context, clu
 
 	vm.UpdateValidationStatus(cluster, result)
 
-	// Log validation results
+	// Emit events and log based on health check results
 	if result.ConnectivityPassed && result.ReplicationPassed {
-		log.Debug("cluster validation passed",
+		log.Debug("health check passed",
 			zap.Int64("replicationLagMs", result.ReplicationLagMs),
 			zap.Int("healthyInstances", len(result.InstanceResults)))
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonHealthCheckPassed,
+			fmt.Sprintf("Health check passed: %d healthy instances", len(result.InstanceResults)))
 	} else {
-		log.Warn("cluster validation issues detected",
+		log.Warn("health check failed",
 			zap.Bool("connectivityPassed", result.ConnectivityPassed),
 			zap.Bool("replicationPassed", result.ReplicationPassed),
 			zap.Int64("replicationLagMs", result.ReplicationLagMs))
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, EventReasonHealthCheckFailed,
+			fmt.Sprintf("Health check failed: connectivity=%t, replication=%t, lag=%dms",
+				result.ConnectivityPassed, result.ReplicationPassed, result.ReplicationLagMs))
+	}
+
+	// Emit high replication lag warning
+	if result.ReplicationLagMs > 5000 {
+		log.Warn("high replication lag detected",
+			zap.Int64("lagMs", result.ReplicationLagMs))
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicationLagHigh,
+			fmt.Sprintf("Replication lag is high: %dms", result.ReplicationLagMs))
 	}
 
 	return nil

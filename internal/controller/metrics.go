@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"github.com/base14/memgraph-operator/internal/memgraph"
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
@@ -127,6 +128,79 @@ var (
 		},
 		[]string{"cluster", "namespace"},
 	)
+
+	// Memgraph storage metrics (from SHOW STORAGE INFO)
+	storageVertexCountGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_vertex_count",
+			Help: "Number of vertices in the database",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
+
+	storageEdgeCountGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_edge_count",
+			Help: "Number of edges in the database",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
+
+	storageAverageDegreeGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_average_degree",
+			Help: "Average degree of vertices in the database",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
+
+	storageMemoryResGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_memory_resident_bytes",
+			Help: "Current resident memory usage in bytes",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
+
+	storagePeakMemoryResGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_memory_peak_bytes",
+			Help: "Peak resident memory usage in bytes",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
+
+	storageDiskUsageGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_disk_usage_bytes",
+			Help: "Disk space consumed in bytes",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
+
+	storageMemoryTrackedGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_memory_tracked_bytes",
+			Help: "Actively tracked memory allocation in bytes",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
+
+	storageAllocationLimitGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_allocation_limit_bytes",
+			Help: "Maximum memory allocation limit in bytes",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
+
+	storageUnreleasedDeltaObjectsGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_storage_unreleased_delta_objects",
+			Help: "Count of delta objects awaiting cleanup",
+		},
+		[]string{"cluster", "namespace", "instance", "role"},
+	)
 )
 
 func init() {
@@ -146,6 +220,16 @@ func init() {
 		failoverEventsTotal,
 		validationLastRunTimestamp,
 		validationPassedGauge,
+		// Storage metrics
+		storageVertexCountGauge,
+		storageEdgeCountGauge,
+		storageAverageDegreeGauge,
+		storageMemoryResGauge,
+		storagePeakMemoryResGauge,
+		storageDiskUsageGauge,
+		storageMemoryTrackedGauge,
+		storageAllocationLimitGauge,
+		storageUnreleasedDeltaObjectsGauge,
 	)
 }
 
@@ -233,6 +317,36 @@ func (m *MetricsRecorder) RecordValidation(cluster, namespace string, timestamp 
 		passedValue = 1.0
 	}
 	validationPassedGauge.WithLabelValues(cluster, namespace).Set(passedValue)
+}
+
+// RecordStorageInfo records storage metrics from SHOW STORAGE INFO
+func (m *MetricsRecorder) RecordStorageInfo(cluster, namespace, instance, role string, info *memgraph.StorageInfo) {
+	if info == nil {
+		return
+	}
+	storageVertexCountGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.VertexCount))
+	storageEdgeCountGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.EdgeCount))
+	storageAverageDegreeGauge.WithLabelValues(cluster, namespace, instance, role).Set(info.AverageDegree)
+	storageMemoryResGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.MemoryRes))
+	storagePeakMemoryResGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.PeakMemoryRes))
+	storageDiskUsageGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.DiskUsage))
+	storageMemoryTrackedGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.MemoryTracked))
+	storageAllocationLimitGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.AllocationLimit))
+	storageUnreleasedDeltaObjectsGauge.WithLabelValues(cluster, namespace, instance, role).
+		Set(float64(info.UnreleasedDeltaObjects))
+}
+
+// DeleteInstanceStorageMetrics removes storage metrics for a specific instance
+func (m *MetricsRecorder) DeleteInstanceStorageMetrics(cluster, namespace, instance, role string) {
+	storageVertexCountGauge.DeleteLabelValues(cluster, namespace, instance, role)
+	storageEdgeCountGauge.DeleteLabelValues(cluster, namespace, instance, role)
+	storageAverageDegreeGauge.DeleteLabelValues(cluster, namespace, instance, role)
+	storageMemoryResGauge.DeleteLabelValues(cluster, namespace, instance, role)
+	storagePeakMemoryResGauge.DeleteLabelValues(cluster, namespace, instance, role)
+	storageDiskUsageGauge.DeleteLabelValues(cluster, namespace, instance, role)
+	storageMemoryTrackedGauge.DeleteLabelValues(cluster, namespace, instance, role)
+	storageAllocationLimitGauge.DeleteLabelValues(cluster, namespace, instance, role)
+	storageUnreleasedDeltaObjectsGauge.DeleteLabelValues(cluster, namespace, instance, role)
 }
 
 // DeleteClusterMetrics removes metrics for a deleted cluster

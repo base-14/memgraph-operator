@@ -100,11 +100,16 @@ func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Initialize status if needed
 	if cluster.Status.Phase == "" {
 		cluster.Status.Phase = memgraphv1alpha1.ClusterPhasePending
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonClusterCreated,
+			"Cluster created, starting initialization")
 		if err := r.Status().Update(ctx, cluster); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
+
+	// Track previous phase for event emission
+	previousPhase := cluster.Status.Phase
 
 	// Reconcile resources
 	result, err := r.reconcileResources(ctx, cluster, log)
@@ -114,7 +119,7 @@ func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	r.metrics.RecordReconcileDuration(cluster.Name, cluster.Namespace, duration)
 
 	if err != nil {
-		r.Recorder.Event(cluster, corev1.EventTypeWarning, "ReconcileError", err.Error())
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReconcileError, err.Error())
 		r.metrics.RecordReconcileOperation(cluster.Name, cluster.Namespace, "error")
 		return result, err
 	}
@@ -122,6 +127,9 @@ func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Record cluster metrics
 	r.metrics.RecordReconcileOperation(cluster.Name, cluster.Namespace, "success")
 	r.metrics.RecordClusterPhase(cluster.Name, cluster.Namespace, string(cluster.Status.Phase))
+
+	// Emit phase transition events
+	r.emitPhaseTransitionEvents(cluster, previousPhase)
 
 	replicas := cluster.Spec.Replicas
 	if replicas == 0 {
@@ -210,7 +218,7 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 		} else {
 			if err := r.replicationManager.ConfigureReplication(ctx, cluster, pods, writeInstance, log); err != nil {
 				log.Error("failed to configure replication", zap.Error(err))
-				r.Recorder.Event(cluster, corev1.EventTypeWarning, "ReplicationError",
+				r.Recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicationError,
 					fmt.Sprintf("Failed to configure replication: %v", err))
 			} else {
 				health, err := r.replicationManager.CheckReplicationHealth(ctx, cluster, writeInstance, log)
@@ -240,7 +248,10 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 		}
 	}
 
-	// 11. Update status
+	// 11. Collect storage metrics from all running pods
+	r.collectStorageMetrics(ctx, cluster, pods, writeInstance, log)
+
+	// 12. Update status
 	if err := r.updateStatus(ctx, cluster, pods, writeInstance, registeredReplicas); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -272,7 +283,7 @@ func (r *MemgraphClusterReconciler) ensureReplicationManager() error {
 		return fmt.Errorf("failed to create memgraph client: %w", err)
 	}
 
-	r.replicationManager = NewReplicationManager(mgClient)
+	r.replicationManager = NewReplicationManager(mgClient, r.Recorder)
 	return nil
 }
 
@@ -311,7 +322,7 @@ func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cl
 			log.Info("creating StatefulSet",
 				zap.String("statefulset", desired.Name),
 				zap.Int32("replicas", *desired.Spec.Replicas))
-			r.Recorder.Event(cluster, corev1.EventTypeNormal, "CreatingStatefulSet",
+			r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonCreatingStatefulSet,
 				fmt.Sprintf("Creating StatefulSet %s with %d replicas", desired.Name, *desired.Spec.Replicas))
 			return r.Create(ctx, desired)
 		}
@@ -325,7 +336,7 @@ func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cl
 			zap.Int32("currentReplicas", *existing.Spec.Replicas),
 			zap.Int32("desiredReplicas", *desired.Spec.Replicas))
 		existing.Spec.Replicas = desired.Spec.Replicas
-		r.Recorder.Event(cluster, corev1.EventTypeNormal, "ScalingStatefulSet",
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonScalingStatefulSet,
 			fmt.Sprintf("Scaling StatefulSet %s to %d replicas", existing.Name, *desired.Spec.Replicas))
 		return r.Update(ctx, existing)
 	}
@@ -360,7 +371,7 @@ func (r *MemgraphClusterReconciler) reconcileWriteService(ctx context.Context, c
 			zap.String("previousInstance", currentWriteInstance),
 			zap.String("newInstance", writeInstance))
 		existing.Spec.Selector = desired.Spec.Selector
-		r.Recorder.Event(cluster, corev1.EventTypeNormal, "UpdatedWriteService",
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonUpdatedWriteService,
 			fmt.Sprintf("Write service now pointing to %s", writeInstance))
 		return r.Update(ctx, existing)
 	}
@@ -556,6 +567,62 @@ func conditionMessage(ok bool, trueMsg, falseMsg string) string {
 		return trueMsg
 	}
 	return falseMsg
+}
+
+// collectStorageMetrics collects storage metrics from all running pods
+func (r *MemgraphClusterReconciler) collectStorageMetrics(
+	ctx context.Context,
+	cluster *memgraphv1alpha1.MemgraphCluster,
+	pods []corev1.Pod,
+	writeInstance string,
+	log *zap.Logger,
+) {
+	if r.replicationManager == nil || r.replicationManager.Client() == nil {
+		return
+	}
+
+	mgClient := r.replicationManager.Client()
+	for _, pod := range pods {
+		if !isPodReady(&pod) {
+			continue
+		}
+
+		role := "replica"
+		if pod.Name == writeInstance {
+			role = "main"
+		}
+
+		info, err := mgClient.GetStorageInfo(ctx, cluster.Namespace, pod.Name)
+		if err != nil {
+			log.Debug("failed to collect storage metrics",
+				zap.String("pod", pod.Name),
+				zap.Error(err))
+			continue
+		}
+
+		r.metrics.RecordStorageInfo(cluster.Name, cluster.Namespace, pod.Name, role, info)
+	}
+}
+
+// emitPhaseTransitionEvents emits events when cluster phase changes
+func (r *MemgraphClusterReconciler) emitPhaseTransitionEvents(
+	cluster *memgraphv1alpha1.MemgraphCluster,
+	previousPhase memgraphv1alpha1.ClusterPhase,
+) {
+	currentPhase := cluster.Status.Phase
+	if currentPhase == previousPhase {
+		return
+	}
+
+	switch {
+	case currentPhase == memgraphv1alpha1.ClusterPhaseRunning:
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonClusterReady,
+			fmt.Sprintf("Cluster is ready with %d instances", cluster.Status.ReadyInstances))
+	case previousPhase == memgraphv1alpha1.ClusterPhaseRunning &&
+		currentPhase == memgraphv1alpha1.ClusterPhaseInitializing:
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, EventReasonClusterDegraded,
+			fmt.Sprintf("Cluster degraded: %d instances ready", cluster.Status.ReadyInstances))
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

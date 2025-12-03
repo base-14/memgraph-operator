@@ -140,6 +140,22 @@ The operator exposes Prometheus metrics for monitoring cluster health and operat
 | `memgraph_validation_last_run_timestamp_seconds` | Gauge | Unix timestamp of the last validation run |
 | `memgraph_validation_passed` | Gauge | Whether the last validation passed (1) or not (0) |
 
+### Storage Metrics (from SHOW STORAGE INFO)
+
+The operator collects storage statistics from each Memgraph instance:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `memgraph_storage_vertex_count` | Gauge | Number of vertices in the database |
+| `memgraph_storage_edge_count` | Gauge | Number of edges in the database |
+| `memgraph_storage_average_degree` | Gauge | Average degree of vertices |
+| `memgraph_storage_memory_resident_bytes` | Gauge | Current resident memory usage |
+| `memgraph_storage_memory_peak_bytes` | Gauge | Peak resident memory usage |
+| `memgraph_storage_disk_usage_bytes` | Gauge | Disk space consumed |
+| `memgraph_storage_memory_tracked_bytes` | Gauge | Actively tracked memory allocation |
+| `memgraph_storage_allocation_limit_bytes` | Gauge | Maximum memory allocation limit |
+| `memgraph_storage_unreleased_delta_objects` | Gauge | Delta objects awaiting cleanup |
+
 All metrics include `cluster` and `namespace` labels. Instance-level metrics also include `instance` and `role` labels.
 
 ## Contributing

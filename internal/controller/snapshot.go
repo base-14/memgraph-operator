@@ -365,7 +365,12 @@ func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context
 			log.Info("creating snapshot CronJob",
 				zap.String("cronjob", desired.Name),
 				zap.String("schedule", cluster.Spec.Snapshot.Schedule))
-			return r.Create(ctx, desired)
+			if err := r.Create(ctx, desired); err != nil {
+				return err
+			}
+			r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonSnapshotCronJobCreated,
+				fmt.Sprintf("Snapshot CronJob created with schedule: %s", cluster.Spec.Snapshot.Schedule))
+			return nil
 		}
 		return err
 	}
@@ -380,7 +385,12 @@ func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context
 			zap.String("oldSchedule", existing.Spec.Schedule),
 			zap.String("newSchedule", desired.Spec.Schedule))
 		existing.Spec = desired.Spec
-		return r.Update(ctx, existing)
+		if err := r.Update(ctx, existing); err != nil {
+			return err
+		}
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonSnapshotCronJobUpdated,
+			fmt.Sprintf("Snapshot schedule updated to: %s", desired.Spec.Schedule))
+		return nil
 	}
 
 	return nil
