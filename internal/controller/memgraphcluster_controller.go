@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.uber.org/zap"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -20,7 +21,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 	"github.com/base14/memgraph-operator/internal/memgraph"
@@ -41,6 +41,7 @@ type MemgraphClusterReconciler struct {
 	Scheme             *runtime.Scheme
 	Recorder           record.EventRecorder
 	Config             *rest.Config
+	Log                *zap.Logger
 	replicationManager *ReplicationManager
 	metrics            *MetricsRecorder
 }
@@ -58,7 +59,10 @@ type MemgraphClusterReconciler struct {
 
 // Reconcile is the main reconciliation loop
 func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+	log := r.Log.With(
+		zap.String("cluster", req.Name),
+		zap.String("namespace", req.Namespace),
+	)
 	startTime := time.Now()
 
 	// Initialize metrics recorder if not already done
@@ -70,12 +74,11 @@ func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	cluster := &memgraphv1alpha1.MemgraphCluster{}
 	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("MemgraphCluster resource not found, likely deleted")
 			// Clean up metrics for deleted cluster
 			r.metrics.DeleteClusterMetrics(req.Name, req.Namespace)
 			return ctrl.Result{}, nil
 		}
-		logger.Error(err, "Failed to get MemgraphCluster")
+		log.Error("failed to get MemgraphCluster", zap.Error(err))
 		r.metrics.RecordReconcileOperation(req.Name, req.Namespace, "error")
 		return ctrl.Result{}, err
 	}
@@ -104,7 +107,7 @@ func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Reconcile resources
-	result, err := r.reconcileResources(ctx, cluster)
+	result, err := r.reconcileResources(ctx, cluster, log)
 
 	// Record metrics
 	duration := time.Since(startTime).Seconds()
@@ -155,11 +158,7 @@ func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 // handleDeletion handles the cleanup when a MemgraphCluster is deleted
 func (r *MemgraphClusterReconciler) handleDeletion(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	if controllerutil.ContainsFinalizer(cluster, finalizerName) {
-		logger.Info("Performing cleanup before deletion")
-
 		// TODO: Trigger final snapshot before deletion if configured
 
 		// Remove finalizer
@@ -173,16 +172,14 @@ func (r *MemgraphClusterReconciler) handleDeletion(ctx context.Context, cluster 
 }
 
 // reconcileResources reconciles all resources for the cluster
-func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
+func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, log *zap.Logger) (ctrl.Result, error) {
 	// 1. Reconcile headless service (must exist before StatefulSet)
-	if err := r.reconcileHeadlessService(ctx, cluster); err != nil {
+	if err := r.reconcileHeadlessService(ctx, cluster, log); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// 2. Reconcile StatefulSet
-	if err := r.reconcileStatefulSet(ctx, cluster); err != nil {
+	if err := r.reconcileStatefulSet(ctx, cluster, log); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -196,12 +193,12 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 	writeInstance := r.determineWriteInstance(cluster, pods)
 
 	// 5. Reconcile write service
-	if err := r.reconcileWriteService(ctx, cluster, writeInstance); err != nil {
+	if err := r.reconcileWriteService(ctx, cluster, writeInstance, log); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// 6. Reconcile read service
-	if err := r.reconcileReadService(ctx, cluster); err != nil {
+	if err := r.reconcileReadService(ctx, cluster, log); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -209,17 +206,14 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 	var registeredReplicas int32
 	if writeInstance != "" && len(pods) > 1 {
 		if err := r.ensureReplicationManager(); err != nil {
-			logger.Error(err, "Failed to create replication manager")
-			// Continue anyway, we can retry on next reconcile
+			log.Error("failed to create replication manager", zap.Error(err))
 		} else {
-			if err := r.replicationManager.ConfigureReplication(ctx, cluster, pods, writeInstance); err != nil {
-				logger.Error(err, "Failed to configure replication")
+			if err := r.replicationManager.ConfigureReplication(ctx, cluster, pods, writeInstance, log); err != nil {
+				log.Error("failed to configure replication", zap.Error(err))
 				r.Recorder.Event(cluster, corev1.EventTypeWarning, "ReplicationError",
 					fmt.Sprintf("Failed to configure replication: %v", err))
-				// Don't return error, let status update happen
 			} else {
-				// Get health info for status
-				health, err := r.replicationManager.CheckReplicationHealth(ctx, cluster, writeInstance)
+				health, err := r.replicationManager.CheckReplicationHealth(ctx, cluster, writeInstance, log)
 				if err == nil && health != nil {
 					registeredReplicas = health.TotalReplicas
 				}
@@ -229,21 +223,20 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 
 	// 8. Reconcile snapshot CronJob if enabled
 	if cluster.Spec.Snapshot.Enabled {
-		if err := r.reconcileSnapshotCronJob(ctx, cluster); err != nil {
-			logger.Error(err, "Failed to reconcile snapshot CronJob")
-			// Don't return error, let status update happen
+		if err := r.reconcileSnapshotCronJob(ctx, cluster, log); err != nil {
+			log.Error("failed to reconcile snapshot CronJob", zap.Error(err))
 		}
 	}
 
 	// 9. Update snapshot status
 	if err := r.updateSnapshotStatus(ctx, cluster); err != nil {
-		logger.Error(err, "Failed to update snapshot status")
+		log.Error("failed to update snapshot status", zap.Error(err))
 	}
 
 	// 10. Run validation tests (only when cluster is running)
 	if cluster.Status.Phase == memgraphv1alpha1.ClusterPhaseRunning {
-		if err := r.reconcileValidation(ctx, cluster, pods, writeInstance); err != nil {
-			logger.Error(err, "Failed to run validation")
+		if err := r.reconcileValidation(ctx, cluster, pods, writeInstance, log); err != nil {
+			log.Error("validation failed", zap.Error(err))
 		}
 	}
 
@@ -254,7 +247,9 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 
 	// Check if we need to requeue for pending operations
 	if cluster.Status.Phase != memgraphv1alpha1.ClusterPhaseRunning {
-		logger.Info("Cluster not yet running, requeueing", "phase", cluster.Status.Phase)
+		log.Info("cluster not yet running, requeueing",
+			zap.String("phase", string(cluster.Status.Phase)),
+			zap.Duration("requeueAfter", requeueAfterShort))
 		return ctrl.Result{RequeueAfter: requeueAfterShort}, nil
 	}
 
@@ -282,9 +277,7 @@ func (r *MemgraphClusterReconciler) ensureReplicationManager() error {
 }
 
 // reconcileHeadlessService ensures the headless service exists
-func (r *MemgraphClusterReconciler) reconcileHeadlessService(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster) error {
-	logger := log.FromContext(ctx)
-
+func (r *MemgraphClusterReconciler) reconcileHeadlessService(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, log *zap.Logger) error {
 	desired := buildHeadlessService(cluster)
 	if err := ctrl.SetControllerReference(cluster, desired, r.Scheme); err != nil {
 		return err
@@ -294,20 +287,18 @@ func (r *MemgraphClusterReconciler) reconcileHeadlessService(ctx context.Context
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("Creating headless service", "name", desired.Name)
+			log.Info("creating headless service",
+				zap.String("service", desired.Name))
 			return r.Create(ctx, desired)
 		}
 		return err
 	}
 
-	// Update if needed (for now, just ensure it exists)
 	return nil
 }
 
 // reconcileStatefulSet ensures the StatefulSet exists and is configured correctly
-func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster) error {
-	logger := log.FromContext(ctx)
-
+func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, log *zap.Logger) error {
 	desired := buildStatefulSet(cluster)
 	if err := ctrl.SetControllerReference(cluster, desired, r.Scheme); err != nil {
 		return err
@@ -317,7 +308,9 @@ func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cl
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("Creating StatefulSet", "name", desired.Name, "replicas", *desired.Spec.Replicas)
+			log.Info("creating StatefulSet",
+				zap.String("statefulset", desired.Name),
+				zap.Int32("replicas", *desired.Spec.Replicas))
 			r.Recorder.Event(cluster, corev1.EventTypeNormal, "CreatingStatefulSet",
 				fmt.Sprintf("Creating StatefulSet %s with %d replicas", desired.Name, *desired.Spec.Replicas))
 			return r.Create(ctx, desired)
@@ -327,9 +320,10 @@ func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cl
 
 	// Check if update is needed (replica count change)
 	if *existing.Spec.Replicas != *desired.Spec.Replicas {
-		logger.Info("Updating StatefulSet replicas",
-			"current", *existing.Spec.Replicas,
-			"desired", *desired.Spec.Replicas)
+		log.Info("scaling StatefulSet",
+			zap.String("statefulset", existing.Name),
+			zap.Int32("currentReplicas", *existing.Spec.Replicas),
+			zap.Int32("desiredReplicas", *desired.Spec.Replicas))
 		existing.Spec.Replicas = desired.Spec.Replicas
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "ScalingStatefulSet",
 			fmt.Sprintf("Scaling StatefulSet %s to %d replicas", existing.Name, *desired.Spec.Replicas))
@@ -340,9 +334,7 @@ func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cl
 }
 
 // reconcileWriteService ensures the write service exists and points to the correct pod
-func (r *MemgraphClusterReconciler) reconcileWriteService(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, writeInstance string) error {
-	logger := log.FromContext(ctx)
-
+func (r *MemgraphClusterReconciler) reconcileWriteService(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, writeInstance string, log *zap.Logger) error {
 	desired := buildWriteService(cluster, writeInstance)
 	if err := ctrl.SetControllerReference(cluster, desired, r.Scheme); err != nil {
 		return err
@@ -352,7 +344,9 @@ func (r *MemgraphClusterReconciler) reconcileWriteService(ctx context.Context, c
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("Creating write service", "name", desired.Name, "writeInstance", writeInstance)
+			log.Info("creating write service",
+				zap.String("service", desired.Name),
+				zap.String("writeInstance", writeInstance))
 			return r.Create(ctx, desired)
 		}
 		return err
@@ -361,9 +355,10 @@ func (r *MemgraphClusterReconciler) reconcileWriteService(ctx context.Context, c
 	// Check if selector needs update (write instance changed)
 	currentWriteInstance := existing.Spec.Selector["statefulset.kubernetes.io/pod-name"]
 	if currentWriteInstance != writeInstance && writeInstance != "" {
-		logger.Info("Updating write service selector",
-			"previous", currentWriteInstance,
-			"new", writeInstance)
+		log.Info("updating write service selector",
+			zap.String("service", existing.Name),
+			zap.String("previousInstance", currentWriteInstance),
+			zap.String("newInstance", writeInstance))
 		existing.Spec.Selector = desired.Spec.Selector
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "UpdatedWriteService",
 			fmt.Sprintf("Write service now pointing to %s", writeInstance))
@@ -374,9 +369,7 @@ func (r *MemgraphClusterReconciler) reconcileWriteService(ctx context.Context, c
 }
 
 // reconcileReadService ensures the read service exists
-func (r *MemgraphClusterReconciler) reconcileReadService(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster) error {
-	logger := log.FromContext(ctx)
-
+func (r *MemgraphClusterReconciler) reconcileReadService(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, log *zap.Logger) error {
 	desired := buildReadService(cluster)
 	if err := ctrl.SetControllerReference(cluster, desired, r.Scheme); err != nil {
 		return err
@@ -386,7 +379,8 @@ func (r *MemgraphClusterReconciler) reconcileReadService(ctx context.Context, cl
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("Creating read service", "name", desired.Name)
+			log.Info("creating read service",
+				zap.String("service", desired.Name))
 			return r.Create(ctx, desired)
 		}
 		return err

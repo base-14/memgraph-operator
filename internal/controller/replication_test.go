@@ -5,6 +5,7 @@ package controller
 import (
 	"testing"
 
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -233,7 +234,8 @@ func TestReplicationManager_HandleMainFailover(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := t.Context()
-			newMain, err := rm.HandleMainFailover(ctx, tt.cluster, tt.pods, tt.failedMain)
+			log := zap.NewNop()
+			newMain, err := rm.HandleMainFailover(ctx, tt.cluster, tt.pods, tt.failedMain, log)
 
 			if tt.expectError {
 				if err == nil {

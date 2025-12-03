@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.uber.org/zap"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -14,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 	"github.com/base14/memgraph-operator/internal/memgraph"
@@ -41,15 +41,14 @@ func NewSnapshotManager(mgClient *memgraph.Client) *SnapshotManager {
 }
 
 // TriggerSnapshot triggers a snapshot on the main instance
-func (sm *SnapshotManager) TriggerSnapshot(ctx context.Context, namespace, podName string) error {
-	logger := log.FromContext(ctx)
-	logger.Info("Triggering snapshot", "pod", podName)
+func (sm *SnapshotManager) TriggerSnapshot(ctx context.Context, namespace, podName string, log *zap.Logger) error {
+	log.Info("triggering snapshot", zap.String("pod", podName))
 
 	if err := sm.mgClient.CreateSnapshot(ctx, namespace, podName); err != nil {
 		return fmt.Errorf("failed to create snapshot: %w", err)
 	}
 
-	logger.Info("Snapshot created successfully", "pod", podName)
+	log.Info("snapshot created successfully", zap.String("pod", podName))
 	return nil
 }
 
@@ -348,12 +347,10 @@ func buildS3Env(cluster *memgraphv1alpha1.MemgraphCluster) []corev1.EnvVar {
 }
 
 // reconcileSnapshotCronJob ensures the snapshot CronJob exists and is configured correctly
-func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster) error {
-	logger := log.FromContext(ctx)
-
+func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, log *zap.Logger) error {
 	// If snapshots are not enabled, ensure CronJob doesn't exist
 	if !cluster.Spec.Snapshot.Enabled {
-		return r.deleteSnapshotCronJob(ctx, cluster)
+		return r.deleteSnapshotCronJob(ctx, cluster, log)
 	}
 
 	desired := buildSnapshotCronJob(cluster)
@@ -365,7 +362,9 @@ func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("Creating snapshot CronJob", "name", desired.Name, "schedule", cluster.Spec.Snapshot.Schedule)
+			log.Info("creating snapshot CronJob",
+				zap.String("cronjob", desired.Name),
+				zap.String("schedule", cluster.Spec.Snapshot.Schedule))
 			return r.Create(ctx, desired)
 		}
 		return err
@@ -376,10 +375,10 @@ func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context
 		len(existing.Spec.JobTemplate.Spec.Template.Spec.Containers) != len(desired.Spec.JobTemplate.Spec.Template.Spec.Containers)
 
 	if needsUpdate {
-		logger.Info("Updating snapshot CronJob",
-			"name", existing.Name,
-			"oldSchedule", existing.Spec.Schedule,
-			"newSchedule", desired.Spec.Schedule)
+		log.Info("updating snapshot CronJob",
+			zap.String("cronjob", existing.Name),
+			zap.String("oldSchedule", existing.Spec.Schedule),
+			zap.String("newSchedule", desired.Spec.Schedule))
 		existing.Spec = desired.Spec
 		return r.Update(ctx, existing)
 	}
@@ -388,9 +387,7 @@ func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context
 }
 
 // deleteSnapshotCronJob deletes the snapshot CronJob if it exists
-func (r *MemgraphClusterReconciler) deleteSnapshotCronJob(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster) error {
-	logger := log.FromContext(ctx)
-
+func (r *MemgraphClusterReconciler) deleteSnapshotCronJob(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, log *zap.Logger) error {
 	cronJob := &batchv1.CronJob{}
 	name := cluster.Name + "-snapshot"
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, cronJob)
@@ -401,7 +398,7 @@ func (r *MemgraphClusterReconciler) deleteSnapshotCronJob(ctx context.Context, c
 		return err
 	}
 
-	logger.Info("Deleting snapshot CronJob", "name", name)
+	log.Info("deleting snapshot CronJob", zap.String("cronjob", name))
 	return r.Delete(ctx, cronJob)
 }
 

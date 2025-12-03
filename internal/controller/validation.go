@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 	"github.com/base14/memgraph-operator/internal/memgraph"
@@ -47,10 +47,7 @@ type InstanceValidation struct {
 }
 
 // RunValidation runs all validation tests for the cluster
-func (vm *ValidationManager) RunValidation(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string) (*ValidationResult, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("Running cluster validation", "cluster", cluster.Name)
-
+func (vm *ValidationManager) RunValidation(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, log *zap.Logger) (*ValidationResult, error) {
 	result := &ValidationResult{
 		ConnectivityPassed: true,
 		ReplicationPassed:  true,
@@ -88,9 +85,9 @@ func (vm *ValidationManager) RunValidation(ctx context.Context, cluster *memgrap
 
 	// If we have a write instance and replicas, test replication
 	if writeInstance != "" && len(pods) > 1 {
-		lagMs, err := vm.testReplicationLag(ctx, cluster, pods, writeInstance)
+		lagMs, err := vm.testReplicationLag(ctx, cluster, pods, writeInstance, log)
 		if err != nil {
-			logger.Error(err, "Failed to test replication lag")
+			log.Error("failed to test replication lag", zap.Error(err))
 			result.ReplicationPassed = false
 		} else {
 			result.ReplicationLagMs = lagMs
@@ -105,9 +102,7 @@ func (vm *ValidationManager) RunValidation(ctx context.Context, cluster *memgrap
 }
 
 // testReplicationLag tests replication by writing to main and reading from replicas
-func (vm *ValidationManager) testReplicationLag(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string) (int64, error) {
-	logger := log.FromContext(ctx)
-
+func (vm *ValidationManager) testReplicationLag(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, log *zap.Logger) (int64, error) {
 	// Create a unique test value
 	testValue := fmt.Sprintf("validation_%d", time.Now().UnixNano())
 
@@ -144,7 +139,9 @@ func (vm *ValidationManager) testReplicationLag(ctx context.Context, cluster *me
 		readQuery := `MATCH (n:__ValidationTest {id: 'replication_test'}) RETURN n.value AS value, n.timestamp AS ts`
 		output, err := vm.client.ExecuteQuery(ctx, cluster.Namespace, pod.Name, readQuery)
 		if err != nil {
-			logger.Error(err, "Failed to read from replica", "replica", pod.Name)
+			log.Error("failed to read from replica",
+				zap.String("replica", pod.Name),
+				zap.Error(err))
 			continue
 		}
 
@@ -226,9 +223,7 @@ func (vm *ValidationManager) UpdateValidationStatus(cluster *memgraphv1alpha1.Me
 }
 
 // reconcileValidation runs validation tests periodically
-func (r *MemgraphClusterReconciler) reconcileValidation(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string) error {
-	logger := log.FromContext(ctx)
-
+func (r *MemgraphClusterReconciler) reconcileValidation(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, log *zap.Logger) error {
 	// Only run validation when cluster is running
 	if cluster.Status.Phase != memgraphv1alpha1.ClusterPhaseRunning {
 		return nil
@@ -247,9 +242,9 @@ func (r *MemgraphClusterReconciler) reconcileValidation(ctx context.Context, clu
 	}
 
 	vm := NewValidationManager(r.replicationManager.client)
-	result, err := vm.RunValidation(ctx, cluster, pods, writeInstance)
+	result, err := vm.RunValidation(ctx, cluster, pods, writeInstance, log)
 	if err != nil {
-		logger.Error(err, "Validation failed")
+		log.Error("validation failed", zap.Error(err))
 		return err
 	}
 
@@ -257,14 +252,14 @@ func (r *MemgraphClusterReconciler) reconcileValidation(ctx context.Context, clu
 
 	// Log validation results
 	if result.ConnectivityPassed && result.ReplicationPassed {
-		logger.Info("Cluster validation passed",
-			"replicationLagMs", result.ReplicationLagMs,
-			"healthyInstances", len(result.InstanceResults))
+		log.Debug("cluster validation passed",
+			zap.Int64("replicationLagMs", result.ReplicationLagMs),
+			zap.Int("healthyInstances", len(result.InstanceResults)))
 	} else {
-		logger.Info("Cluster validation issues detected",
-			"connectivityPassed", result.ConnectivityPassed,
-			"replicationPassed", result.ReplicationPassed,
-			"replicationLagMs", result.ReplicationLagMs)
+		log.Warn("cluster validation issues detected",
+			zap.Bool("connectivityPassed", result.ConnectivityPassed),
+			zap.Bool("replicationPassed", result.ReplicationPassed),
+			zap.Int64("replicationLagMs", result.ReplicationLagMs))
 	}
 
 	return nil

@@ -5,6 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -55,6 +56,7 @@ var _ = Describe("MemgraphCluster Controller", func() {
 			controllerReconciler := &MemgraphClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Log:    zap.NewNop(),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
