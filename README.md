@@ -1,8 +1,17 @@
 # memgraph-operator
-// TODO(user): Add simple overview of use/purpose
+
+A Kubernetes operator for deploying and managing Memgraph graph database clusters with built-in replication, snapshots, and S3 backups.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The Memgraph Operator automates the deployment and lifecycle management of Memgraph clusters on Kubernetes. It provides:
+
+- **Cluster Management**: Deploy Memgraph clusters with N replicas (1 MAIN + N-1 REPLICAs)
+- **Automatic Replication**: Configures MAIN/REPLICA topology with ASYNC, SYNC, or STRICT_SYNC modes
+- **Snapshot Management**: Scheduled snapshots via CronJobs with configurable retention
+- **S3 Backups**: Optional backup uploads to S3-compatible storage
+- **Service Discovery**: Automatic creation of write (MAIN) and read (REPLICA) services
+- **Health Monitoring**: Tracks cluster phase, replication status, and instance health
 
 ## Getting Started
 
@@ -110,8 +119,32 @@ the '--force' flag and manually ensure that any custom configuration
 previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
 is manually re-applied afterwards.
 
+## Metrics
+
+The operator exposes Prometheus metrics for monitoring cluster health and operations:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `memgraph_cluster_phase` | Gauge | Current phase of the cluster (0=Pending, 1=Initializing, 2=Running, 3=Failed) |
+| `memgraph_cluster_ready_instances` | Gauge | Number of ready instances in the cluster |
+| `memgraph_cluster_desired_instances` | Gauge | Desired number of instances in the cluster |
+| `memgraph_cluster_registered_replicas` | Gauge | Number of replicas registered with the main instance |
+| `memgraph_replication_lag_milliseconds` | Gauge | Replication lag in milliseconds |
+| `memgraph_replication_healthy` | Gauge | Whether replication is healthy (1) or not (0) |
+| `memgraph_instance_healthy` | Gauge | Whether an instance is healthy (1) or not (0) |
+| `memgraph_reconcile_operations_total` | Counter | Total number of reconcile operations by result |
+| `memgraph_reconcile_duration_seconds` | Histogram | Duration of reconcile operations in seconds |
+| `memgraph_snapshot_last_success_timestamp_seconds` | Gauge | Unix timestamp of the last successful snapshot |
+| `memgraph_snapshot_operations_total` | Counter | Total number of snapshot operations by result |
+| `memgraph_failover_events_total` | Counter | Total number of failover events |
+| `memgraph_validation_last_run_timestamp_seconds` | Gauge | Unix timestamp of the last validation run |
+| `memgraph_validation_passed` | Gauge | Whether the last validation passed (1) or not (0) |
+
+All metrics include `cluster` and `namespace` labels. Instance-level metrics also include `instance` and `role` labels.
+
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+
+Contributions are welcome! Please open an issue or submit a pull request.
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 
