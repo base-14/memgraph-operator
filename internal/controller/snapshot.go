@@ -79,7 +79,7 @@ func buildSnapshotCronJob(cluster *memgraphv1alpha1.MemgraphCluster) *batchv1.Cr
 	initContainers := buildSnapshotInitContainers(cluster, memgraphImage)
 
 	// Build main containers
-	containers := buildSnapshotMainContainers(cluster, memgraphImage)
+	containers := buildSnapshotMainContainers(cluster)
 
 	// Build volumes
 	volumes := buildSnapshotVolumes(cluster)
@@ -202,7 +202,7 @@ ls -la /snapshot-data/snapshots/
 }
 
 // buildSnapshotMainContainers builds the main containers for the snapshot job
-func buildSnapshotMainContainers(cluster *memgraphv1alpha1.MemgraphCluster, memgraphImage string) []corev1.Container {
+func buildSnapshotMainContainers(cluster *memgraphv1alpha1.MemgraphCluster) []corev1.Container {
 	// If S3 is enabled, main container uploads to S3
 	if cluster.Spec.Snapshot.S3 != nil && cluster.Spec.Snapshot.S3.Enabled {
 		return []corev1.Container{buildS3UploadContainer(cluster)}

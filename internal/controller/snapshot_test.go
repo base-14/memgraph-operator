@@ -428,8 +428,8 @@ func TestBuildS3Env(t *testing.T) {
 
 func TestBuildSnapshotVolumes(t *testing.T) {
 	tests := []struct {
-		name           string
-		cluster        *memgraphv1alpha1.MemgraphCluster
+		name            string
+		cluster         *memgraphv1alpha1.MemgraphCluster
 		expectedVolumes int
 	}{
 		{
