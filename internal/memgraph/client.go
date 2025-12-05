@@ -346,8 +346,13 @@ func parseShowReplicasOutput(output string) []ReplicaInfo {
 		if strings.HasPrefix(line, "|") {
 			parts := strings.Split(line, "|")
 			if len(parts) >= 6 {
+				// Strip surrounding quotes from replica name if present
+				// Memgraph returns names like "replica_name" but DROP REPLICA expects unquoted names
+				name := strings.TrimSpace(parts[1])
+				name = strings.Trim(name, "\"")
+
 				replica := ReplicaInfo{
-					Name:   strings.TrimSpace(parts[1]),
+					Name:   name,
 					Host:   strings.TrimSpace(parts[2]),
 					Mode:   strings.TrimSpace(parts[4]),
 					Status: strings.TrimSpace(parts[5]),

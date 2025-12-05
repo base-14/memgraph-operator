@@ -30,6 +30,9 @@ const (
 	// Requeue intervals
 	requeueAfterShort = 10 * time.Second
 	requeueAfterLong  = 30 * time.Second
+	// Error backoff - prevent tight retry loops when operations fail
+	requeueAfterError    = 30 * time.Second
+	requeueAfterErrorMax = 5 * time.Minute
 
 	// Finalizer name
 	finalizerName = "memgraph.base14.io/finalizer"
@@ -212,14 +215,17 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 
 	// 7. Configure replication if we have a write instance and pods are ready
 	var registeredReplicas int32
+	var replicationError error
 	if writeInstance != "" && len(pods) > 1 {
 		if err := r.ensureReplicationManager(); err != nil {
 			log.Error("failed to create replication manager", zap.Error(err))
+			replicationError = err
 		} else {
 			if err := r.replicationManager.ConfigureReplication(ctx, cluster, pods, writeInstance, log); err != nil {
 				log.Error("failed to configure replication", zap.Error(err))
 				r.Recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicationError,
 					fmt.Sprintf("Failed to configure replication: %v", err))
+				replicationError = err
 			} else {
 				health, err := r.replicationManager.CheckReplicationHealth(ctx, cluster, writeInstance, log)
 				if err == nil && health != nil {
@@ -262,6 +268,14 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 			zap.String("phase", string(cluster.Status.Phase)),
 			zap.Duration("requeueAfter", requeueAfterShort))
 		return ctrl.Result{RequeueAfter: requeueAfterShort}, nil
+	}
+
+	// If there was a replication error, use longer backoff to prevent overwhelming Memgraph
+	if replicationError != nil {
+		log.Info("replication error occurred, using longer backoff",
+			zap.Duration("requeueAfter", requeueAfterError),
+			zap.Error(replicationError))
+		return ctrl.Result{RequeueAfter: requeueAfterError}, nil
 	}
 
 	// Requeue for periodic health checks
