@@ -4,6 +4,8 @@ package controller
 
 import (
 	"testing"
+
+	"github.com/base14/memgraph-operator/internal/memgraph"
 )
 
 func TestMetricsRecorder_RecordClusterPhase(t *testing.T) {
@@ -107,3 +109,41 @@ func TestMetricsRecorder_DeleteClusterMetrics(t *testing.T) {
 	// Delete should not panic
 	m.DeleteClusterMetrics("test-cluster", "default")
 }
+
+func TestMetricsRecorder_RecordStorageInfo(t *testing.T) {
+	m := NewMetricsRecorder()
+
+	// Test with nil storage info - should not panic
+	m.RecordStorageInfo("test-cluster", "default", "pod-0", "main", nil)
+
+	// Test with valid storage info
+	info := &StorageInfo{
+		Name:            "default",
+		VertexCount:     1000,
+		EdgeCount:       5000,
+		AverageDegree:   10.0,
+		MemoryRes:       512 * 1024 * 1024,
+		PeakMemoryRes:   1024 * 1024 * 1024,
+		DiskUsage:       256 * 1024 * 1024,
+		MemoryTracked:   128 * 1024 * 1024,
+		AllocationLimit: 2 * 1024 * 1024 * 1024,
+	}
+	m.RecordStorageInfo("test-cluster", "default", "pod-0", "main", info)
+}
+
+func TestMetricsRecorder_DeleteInstanceStorageMetrics(t *testing.T) {
+	m := NewMetricsRecorder()
+
+	// Record some storage metrics first
+	info := &StorageInfo{
+		VertexCount: 100,
+		EdgeCount:   200,
+	}
+	m.RecordStorageInfo("test-cluster", "default", "pod-0", "main", info)
+
+	// Delete should not panic
+	m.DeleteInstanceStorageMetrics("test-cluster", "default", "pod-0", "main")
+}
+
+// StorageInfo is defined in memgraph package, adding helper type for test
+type StorageInfo = memgraph.StorageInfo

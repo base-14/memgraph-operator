@@ -478,3 +478,150 @@ func TestBuildSnapshotVolumes(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildSnapshotMainContainers(t *testing.T) {
+	tests := []struct {
+		name              string
+		cluster           *memgraphv1alpha1.MemgraphCluster
+		expectedContainer string
+	}{
+		{
+			name: "without S3 - complete container",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Snapshot: memgraphv1alpha1.SnapshotSpec{
+						Enabled: true,
+					},
+				},
+			},
+			expectedContainer: "complete",
+		},
+		{
+			name: "with S3 - s3-upload container",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Snapshot: memgraphv1alpha1.SnapshotSpec{
+						Enabled: true,
+						S3: &memgraphv1alpha1.S3BackupSpec{
+							Enabled: true,
+							Bucket:  "test-bucket",
+						},
+					},
+				},
+			},
+			expectedContainer: "s3-upload",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			containers := buildSnapshotMainContainers(tt.cluster)
+			if len(containers) != 1 {
+				t.Fatalf("expected 1 container, got %d", len(containers))
+			}
+			if containers[0].Name != tt.expectedContainer {
+				t.Errorf("expected container name '%s', got %s", tt.expectedContainer, containers[0].Name)
+			}
+		})
+	}
+}
+
+func TestBuildS3EnvWithoutSecretRef(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				S3: &memgraphv1alpha1.S3BackupSpec{
+					Enabled: true,
+					Region:  "eu-west-1",
+					// No SecretRef
+				},
+			},
+		},
+	}
+
+	envVars := buildS3Env(cluster)
+
+	// Should have 1 env var: AWS_REGION
+	if len(envVars) != 1 {
+		t.Fatalf("expected 1 env var, got %d", len(envVars))
+	}
+
+	if envVars[0].Name != "AWS_REGION" {
+		t.Errorf("expected AWS_REGION, got %s", envVars[0].Name)
+	}
+
+	if envVars[0].Value != "eu-west-1" {
+		t.Errorf("expected region 'eu-west-1', got %s", envVars[0].Value)
+	}
+}
+
+func TestBuildS3EnvWithNilS3(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				Enabled: true,
+			},
+		},
+	}
+
+	envVars := buildS3Env(cluster)
+
+	if len(envVars) != 0 {
+		t.Errorf("expected 0 env vars for nil S3, got %d", len(envVars))
+	}
+}
+
+func TestPtr(t *testing.T) {
+	// Test with bool
+	b := true
+	ptrB := ptr(b)
+	if ptrB == nil || *ptrB != true {
+		t.Error("ptr() for bool failed")
+	}
+
+	// Test with int
+	i := 42
+	ptrI := ptr(i)
+	if ptrI == nil || *ptrI != 42 {
+		t.Error("ptr() for int failed")
+	}
+
+	// Test with string
+	s := "test"
+	ptrS := ptr(s)
+	if ptrS == nil || *ptrS != "test" {
+		t.Error("ptr() for string failed")
+	}
+}
+
+func TestBuildS3UploadContainerDefaultPrefix(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-cluster",
+			Namespace: "default",
+		},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				S3: &memgraphv1alpha1.S3BackupSpec{
+					Enabled: true,
+					Bucket:  "backup-bucket",
+					// No prefix - should use default
+				},
+			},
+		},
+	}
+
+	container := buildS3UploadContainer(cluster)
+
+	// Verify default prefix is used
+	if !strings.Contains(container.Args[0], "memgraph/snapshots") {
+		t.Error("expected default prefix 'memgraph/snapshots' in command")
+	}
+}
+
+func TestNewSnapshotManager(t *testing.T) {
+	sm := NewSnapshotManager(nil)
+	if sm == nil {
+		t.Error("NewSnapshotManager returned nil")
+	}
+}

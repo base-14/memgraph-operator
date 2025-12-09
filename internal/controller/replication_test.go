@@ -122,6 +122,23 @@ func TestReplicationManager_getReadyPodsSorted(t *testing.T) {
 	}
 }
 
+func TestNewReplicationManager(t *testing.T) {
+	fakeRecorder := record.NewFakeRecorder(10)
+	rm := NewReplicationManager(nil, fakeRecorder)
+
+	if rm == nil {
+		t.Error("NewReplicationManager returned nil")
+	}
+
+	if rm.Client() != nil {
+		t.Error("Expected nil client")
+	}
+
+	if rm.recorder != fakeRecorder {
+		t.Error("Recorder not set correctly")
+	}
+}
+
 func TestReplicationManager_HandleMainFailover(t *testing.T) {
 	fakeRecorder := record.NewFakeRecorder(10)
 	rm := &ReplicationManager{
