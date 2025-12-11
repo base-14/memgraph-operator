@@ -1,5 +1,10 @@
-# Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+# Version from VERSION file
+VERSION ?= $(shell cat VERSION)
+
+# Image registry and name
+IMG_REGISTRY ?= base14
+IMG_NAME ?= memgraph-operator
+IMG ?= $(IMG_REGISTRY)/$(IMG_NAME):$(VERSION)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -120,8 +125,10 @@ docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .
 
 .PHONY: docker-push
-docker-push: ## Push docker image with the manager.
+docker-push: ## Push docker image with the manager (pushes both version tag and latest).
 	$(CONTAINER_TOOL) push ${IMG}
+	$(CONTAINER_TOOL) tag ${IMG} $(IMG_REGISTRY)/$(IMG_NAME):latest
+	$(CONTAINER_TOOL) push $(IMG_REGISTRY)/$(IMG_NAME):latest
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

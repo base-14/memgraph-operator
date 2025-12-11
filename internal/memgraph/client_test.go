@@ -204,10 +204,10 @@ func TestParseStorageInfoOutput(t *testing.T) {
 				VertexCount:            500,
 				EdgeCount:              1500,
 				AverageDegree:          6.0,
-				MemoryRes:              45256540,  // 43.16 MiB
+				MemoryRes:              45256540, // 43.16 MiB
 				PeakMemoryRes:          100 * 1024 * 1024,
 				DiskUsage:              10 * 1024 * 1024,
-				MemoryTracked:          8933867,   // 8.52 MiB
+				MemoryTracked:          8933867,     // 8.52 MiB
 				AllocationLimit:        62867583795, // 58.55 GiB
 				UnreleasedDeltaObjects: 10,
 				StorageMode:            "IN_MEMORY_TRANSACTIONAL",
