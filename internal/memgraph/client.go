@@ -43,6 +43,7 @@ func (c *Client) ExecuteQuery(ctx context.Context, namespace, podName, query str
 		"--port", "7687",
 		"--use-ssl=false",
 		"--no-history",
+		"--output-format", "tabular",
 	}
 
 	// Pass query via stdin
@@ -195,7 +196,18 @@ func (c *Client) GetStorageInfo(ctx context.Context, namespace, podName string) 
 		return nil, fmt.Errorf("failed to get storage info: %w", err)
 	}
 
-	return parseStorageInfoOutput(output), nil
+	info := parseStorageInfoOutput(output)
+
+	// Debug: if all numeric values are zero but we got output, log it
+	if output != "" && info.VertexCount == 0 && info.MemoryRes == 0 && info.AllocationLimit == 0 {
+		// Check if any lines were actually parsed by looking for non-empty name
+		if info.Name == "" && info.StorageMode == "" {
+			// Nothing was parsed - log the raw output for debugging
+			return info, fmt.Errorf("storage info parsing returned empty results, raw output length: %d bytes, first 500 chars: %.500s", len(output), output)
+		}
+	}
+
+	return info, nil
 }
 
 // execInPod executes a command in a pod container
