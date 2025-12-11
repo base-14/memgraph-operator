@@ -239,6 +239,7 @@ func (c *Client) execInPod(ctx context.Context, namespace, podName, container st
 
 // parseStorageInfoOutput parses the output of SHOW STORAGE INFO command
 // Output format is a table with | storage info | value | columns
+// Note: Memgraph returns quoted keys and string values (e.g., | "name" | "memgraph" |)
 func parseStorageInfoOutput(output string) *StorageInfo {
 	info := &StorageInfo{}
 
@@ -255,6 +256,11 @@ func parseStorageInfoOutput(output string) *StorageInfo {
 			if len(parts) >= 3 {
 				key := strings.TrimSpace(parts[1])
 				value := strings.TrimSpace(parts[2])
+
+				// Strip surrounding quotes from key and value if present
+				// Memgraph returns keys like "name" and string values like "memgraph"
+				key = strings.Trim(key, "\"")
+				value = strings.Trim(value, "\"")
 
 				switch key {
 				case "name":
@@ -289,7 +295,8 @@ func parseStorageInfoOutput(output string) *StorageInfo {
 	return info
 }
 
-// parseMemoryValue parses memory values that may have units (e.g., "1.5 GiB", "512 MiB")
+// parseMemoryValue parses memory values that may have units (e.g., "1.5 GiB", "512 MiB", "43.16MiB")
+// Handles both space-separated (e.g., "512 MiB") and concatenated (e.g., "43.16MiB") formats
 func parseMemoryValue(value string) int64 {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -301,33 +308,62 @@ func parseMemoryValue(value string) int64 {
 		return n
 	}
 
-	// Parse values with units
+	// Parse values with units - try space-separated first
 	parts := strings.Fields(value)
-	if len(parts) < 1 {
-		return 0
-	}
-
-	num, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil {
-		return 0
-	}
-
 	if len(parts) >= 2 {
-		unit := strings.ToUpper(parts[1])
-		switch unit {
-		case "B", "BYTES":
+		// Space-separated format: "512 MiB"
+		num, err := strconv.ParseFloat(parts[0], 64)
+		if err != nil {
+			return 0
+		}
+		return applyMemoryUnit(num, parts[1])
+	}
+
+	// No space - try to extract number and unit from concatenated format: "43.16MiB"
+	if len(parts) == 1 {
+		numStr, unit := splitNumberAndUnit(parts[0])
+		if numStr == "" {
+			return 0
+		}
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0
+		}
+		if unit == "" {
 			return int64(num)
-		case "KB", "KIB":
-			return int64(num * 1024)
-		case "MB", "MIB":
-			return int64(num * 1024 * 1024)
-		case "GB", "GIB":
-			return int64(num * 1024 * 1024 * 1024)
-		case "TB", "TIB":
-			return int64(num * 1024 * 1024 * 1024 * 1024)
+		}
+		return applyMemoryUnit(num, unit)
+	}
+
+	return 0
+}
+
+// splitNumberAndUnit splits a string like "43.16MiB" into ("43.16", "MiB")
+func splitNumberAndUnit(s string) (string, string) {
+	// Find where the unit starts (first letter)
+	for i, c := range s {
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			return s[:i], s[i:]
 		}
 	}
+	return s, ""
+}
 
+// applyMemoryUnit multiplies the number by the appropriate unit multiplier
+func applyMemoryUnit(num float64, unit string) int64 {
+	unit = strings.ToUpper(unit)
+	switch unit {
+	case "B", "BYTES":
+		return int64(num)
+	case "KB", "KIB":
+		return int64(num * 1024)
+	case "MB", "MIB":
+		return int64(num * 1024 * 1024)
+	case "GB", "GIB":
+		return int64(num * 1024 * 1024 * 1024)
+	case "TB", "TIB":
+		return int64(num * 1024 * 1024 * 1024 * 1024)
+	}
 	return int64(num)
 }
 

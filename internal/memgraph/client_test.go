@@ -181,6 +181,39 @@ func TestParseStorageInfoOutput(t *testing.T) {
 				DiskUsage: 2097152,
 			},
 		},
+		{
+			name: "with quoted keys and values (actual Memgraph format)",
+			output: `+--------------------------------+----------------------------------------+
+| storage info                   | value                                  |
++--------------------------------+----------------------------------------+
+| "name"                         | "memgraph"                             |
+| "vertex_count"                 | 500                                    |
+| "edge_count"                   | 1500                                   |
+| "average_degree"               | 6.0                                    |
+| "memory_res"                   | "43.16MiB"                             |
+| "peak_memory_res"              | "100MiB"                               |
+| "disk_usage"                   | "10MiB"                                |
+| "memory_tracked"               | "8.52MiB"                              |
+| "allocation_limit"             | "58.55GiB"                             |
+| "unreleased_delta_objects"     | 10                                     |
+| "storage_mode"                 | "IN_MEMORY_TRANSACTIONAL"              |
+| "global_isolation_level"       | "SNAPSHOT_ISOLATION"                   |
++--------------------------------+----------------------------------------+`,
+			expected: &StorageInfo{
+				Name:                   "memgraph",
+				VertexCount:            500,
+				EdgeCount:              1500,
+				AverageDegree:          6.0,
+				MemoryRes:              45256540,  // 43.16 MiB
+				PeakMemoryRes:          100 * 1024 * 1024,
+				DiskUsage:              10 * 1024 * 1024,
+				MemoryTracked:          8933867,   // 8.52 MiB
+				AllocationLimit:        62867583795, // 58.55 GiB
+				UnreleasedDeltaObjects: 10,
+				StorageMode:            "IN_MEMORY_TRANSACTIONAL",
+				IsolationLevel:         "SNAPSHOT_ISOLATION",
+			},
+		},
 	}
 
 	for _, tt := range tests {
