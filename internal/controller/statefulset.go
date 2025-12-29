@@ -219,6 +219,35 @@ func buildInitContainers() []corev1.Container {
 				RunAsUser:  &runAsRoot,
 			},
 		},
+		// Clear replication state to prevent startup failures when replicas change.
+		// Memgraph stores replication config and tries to reconnect on startup,
+		// which fails if previously registered replicas no longer exist.
+		// Graph data is preserved - only replication state is cleared.
+		// The operator will re-establish replication after pods are healthy.
+		{
+			Name:            "clear-replication-state",
+			Image:           "busybox:1.36",
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Command: []string{
+				"sh",
+				"-c",
+				fmt.Sprintf(`echo "Clearing Memgraph replication state..."
+rm -rf %s/.internal/replication 2>/dev/null || true
+rm -f %s/.internal/replication_* 2>/dev/null || true
+rm -f %s/.internal/epoch_id 2>/dev/null || true
+echo "Replication state cleared. Operator will reconfigure after startup."`,
+					dataVolumePath, dataVolumePath, dataVolumePath),
+			},
+			SecurityContext: &corev1.SecurityContext{
+				RunAsUser: &runAsRoot,
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      dataVolumeName,
+					MountPath: dataVolumePath,
+				},
+			},
+		},
 		// Volume permissions init container
 		{
 			Name:            "volume-permissions",

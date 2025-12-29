@@ -116,9 +116,9 @@ func TestBuildStatefulSet(t *testing.T) {
 				t.Errorf("Image = %s, want %s", sts.Spec.Template.Spec.Containers[0].Image, tt.expectedImage)
 			}
 
-			// Verify init containers exist
-			if len(sts.Spec.Template.Spec.InitContainers) != 2 {
-				t.Errorf("InitContainers count = %d, want 2", len(sts.Spec.Template.Spec.InitContainers))
+			// Verify init containers exist (sysctl-init, clear-replication-state, volume-permissions)
+			if len(sts.Spec.Template.Spec.InitContainers) != 3 {
+				t.Errorf("InitContainers count = %d, want 3", len(sts.Spec.Template.Spec.InitContainers))
 			}
 
 			// Verify ports
@@ -277,8 +277,8 @@ func TestBuildMemgraphArgs(t *testing.T) {
 func TestBuildInitContainers(t *testing.T) {
 	initContainers := buildInitContainers()
 
-	if len(initContainers) != 2 {
-		t.Fatalf("InitContainers count = %d, want 2", len(initContainers))
+	if len(initContainers) != 3 {
+		t.Fatalf("InitContainers count = %d, want 3", len(initContainers))
 	}
 
 	// Verify sysctl init container
@@ -290,10 +290,19 @@ func TestBuildInitContainers(t *testing.T) {
 		t.Error("sysctl-init should be privileged")
 	}
 
+	// Verify clear-replication-state init container
+	clearReplInit := initContainers[1]
+	if clearReplInit.Name != "clear-replication-state" {
+		t.Errorf("Second init container name = %s, want clear-replication-state", clearReplInit.Name)
+	}
+	if len(clearReplInit.VolumeMounts) != 1 {
+		t.Errorf("clear-replication-state VolumeMounts count = %d, want 1", len(clearReplInit.VolumeMounts))
+	}
+
 	// Verify volume permissions init container
-	volPermsInit := initContainers[1]
+	volPermsInit := initContainers[2]
 	if volPermsInit.Name != "volume-permissions" {
-		t.Errorf("Second init container name = %s, want volume-permissions", volPermsInit.Name)
+		t.Errorf("Third init container name = %s, want volume-permissions", volPermsInit.Name)
 	}
 	if len(volPermsInit.VolumeMounts) != 1 {
 		t.Errorf("volume-permissions VolumeMounts count = %d, want 1", len(volPermsInit.VolumeMounts))
