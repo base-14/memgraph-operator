@@ -56,9 +56,9 @@ func TestLoad(t *testing.T) {
 
 	// Cleanup after test
 	defer func() {
-		os.Setenv("MEMGRAPH_ENVIRONMENT", originalEnv)
-		os.Setenv("MEMGRAPH_LOGGING_LEVEL", originalLogLevel)
-		os.Setenv("MEMGRAPH_LOGGING_DEVELOPMENT", originalLogDev)
+		_ = os.Setenv("MEMGRAPH_ENVIRONMENT", originalEnv)
+		_ = os.Setenv("MEMGRAPH_LOGGING_LEVEL", originalLogLevel)
+		_ = os.Setenv("MEMGRAPH_LOGGING_DEVELOPMENT", originalLogDev)
 	}()
 
 	tests := []struct {
@@ -110,13 +110,13 @@ func TestLoad(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Clear all env vars first
-			os.Unsetenv("MEMGRAPH_ENVIRONMENT")
-			os.Unsetenv("MEMGRAPH_LOGGING_LEVEL")
-			os.Unsetenv("MEMGRAPH_LOGGING_DEVELOPMENT")
+			_ = os.Unsetenv("MEMGRAPH_ENVIRONMENT")
+			_ = os.Unsetenv("MEMGRAPH_LOGGING_LEVEL")
+			_ = os.Unsetenv("MEMGRAPH_LOGGING_DEVELOPMENT")
 
 			// Set test env vars
 			for k, v := range tt.envVars {
-				os.Setenv(k, v)
+				_ = os.Setenv(k, v)
 			}
 
 			cfg, err := Load()
@@ -145,11 +145,11 @@ func TestLoadWithInvalidEnv(t *testing.T) {
 
 	// Cleanup after test
 	defer func() {
-		os.Setenv("MEMGRAPH_LOGGING_DEVELOPMENT", originalLogDev)
+		_ = os.Setenv("MEMGRAPH_LOGGING_DEVELOPMENT", originalLogDev)
 	}()
 
 	// Set an invalid boolean value
-	os.Setenv("MEMGRAPH_LOGGING_DEVELOPMENT", "not-a-boolean")
+	_ = os.Setenv("MEMGRAPH_LOGGING_DEVELOPMENT", "not-a-boolean")
 
 	_, err := Load()
 	if err == nil {

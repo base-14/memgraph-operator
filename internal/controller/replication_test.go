@@ -127,7 +127,7 @@ func TestNewReplicationManager(t *testing.T) {
 	rm := NewReplicationManager(nil, fakeRecorder)
 
 	if rm == nil {
-		t.Error("NewReplicationManager returned nil")
+		t.Fatal("NewReplicationManager returned nil")
 	}
 
 	if rm.Client() != nil {

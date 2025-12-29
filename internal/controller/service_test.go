@@ -155,7 +155,7 @@ func TestBuildHeadlessService(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-cluster",
-			Namespace: "default",
+			Namespace: metav1.NamespaceDefault,
 		},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{},
 	}
@@ -168,8 +168,8 @@ func TestBuildHeadlessService(t *testing.T) {
 	}
 
 	// Verify namespace
-	if svc.Namespace != "default" {
-		t.Errorf("Namespace = %s, want default", svc.Namespace)
+	if svc.Namespace != metav1.NamespaceDefault {
+		t.Errorf("Namespace = %s, want %s", svc.Namespace, metav1.NamespaceDefault)
 	}
 
 	// Verify it's headless
@@ -212,13 +212,13 @@ func TestBuildHeadlessService(t *testing.T) {
 	}
 
 	// Verify labels
-	if svc.Labels["app.kubernetes.io/name"] != "memgraph" {
-		t.Errorf("Label app.kubernetes.io/name = %s, want memgraph", svc.Labels["app.kubernetes.io/name"])
+	if svc.Labels["app.kubernetes.io/name"] != labelAppValue {
+		t.Errorf("Label app.kubernetes.io/name = %s, want %s", svc.Labels["app.kubernetes.io/name"], labelAppValue)
 	}
 
 	// Verify selector
-	if svc.Spec.Selector["app.kubernetes.io/name"] != "memgraph" {
-		t.Errorf("Selector app.kubernetes.io/name = %s, want memgraph", svc.Spec.Selector["app.kubernetes.io/name"])
+	if svc.Spec.Selector["app.kubernetes.io/name"] != labelAppValue {
+		t.Errorf("Selector app.kubernetes.io/name = %s, want %s", svc.Spec.Selector["app.kubernetes.io/name"], labelAppValue)
 	}
 }
 
@@ -234,7 +234,7 @@ func TestBuildWriteService(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
-					Namespace: "default",
+					Namespace: metav1.NamespaceDefault,
 				},
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{},
 			},
@@ -246,7 +246,7 @@ func TestBuildWriteService(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
-					Namespace: "default",
+					Namespace: metav1.NamespaceDefault,
 				},
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{},
 			},
@@ -305,7 +305,7 @@ func TestBuildReadService(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-cluster",
-			Namespace: "default",
+			Namespace: metav1.NamespaceDefault,
 		},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{},
 	}
@@ -318,8 +318,8 @@ func TestBuildReadService(t *testing.T) {
 	}
 
 	// Verify namespace
-	if svc.Namespace != "default" {
-		t.Errorf("Namespace = %s, want default", svc.Namespace)
+	if svc.Namespace != metav1.NamespaceDefault {
+		t.Errorf("Namespace = %s, want %s", svc.Namespace, metav1.NamespaceDefault)
 	}
 
 	// Verify type is ClusterIP

@@ -4,8 +4,6 @@ package main
 
 import (
 	"testing"
-
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 func TestSchemeSetup(t *testing.T) {
@@ -14,8 +12,8 @@ func TestSchemeSetup(t *testing.T) {
 		t.Fatal("scheme should not be nil after init")
 	}
 
-	// Verify that the scheme is a valid runtime.Scheme
-	var _ *runtime.Scheme = scheme
+	// Use scheme to ensure it's accessible
+	_ = scheme
 
 	// Check that scheme has types registered
 	// The init() function should have added both client-go and memgraph types

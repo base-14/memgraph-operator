@@ -26,13 +26,14 @@ func TestLabelConstants(t *testing.T) {
 	}
 
 	// Verify label value constants
-	if labelAppValue != "memgraph" {
+	// Using string literals intentionally to test the constant values
+	if labelAppValue != "memgraph" { //nolint:goconst // testing constant value
 		t.Errorf("labelAppValue = %s, want memgraph", labelAppValue)
 	}
-	if labelManagedByValue != "memgraph-operator" {
+	if labelManagedByValue != "memgraph-operator" { //nolint:goconst // testing constant value
 		t.Errorf("labelManagedByValue = %s, want memgraph-operator", labelManagedByValue)
 	}
-	if labelComponentValue != "database" {
+	if labelComponentValue != "database" { //nolint:goconst // testing constant value
 		t.Errorf("labelComponentValue = %s, want database", labelComponentValue)
 	}
 }

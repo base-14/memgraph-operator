@@ -388,8 +388,8 @@ func TestLabelsForCluster(t *testing.T) {
 			labels := labelsForCluster(tt.cluster)
 
 			// Verify required labels exist
-			if labels["app.kubernetes.io/name"] != "memgraph" {
-				t.Errorf("app.kubernetes.io/name = %s, want memgraph", labels["app.kubernetes.io/name"])
+			if labels["app.kubernetes.io/name"] != labelAppValue {
+				t.Errorf("app.kubernetes.io/name = %s, want %s", labels["app.kubernetes.io/name"], labelAppValue)
 			}
 
 			if labels["app.kubernetes.io/instance"] != tt.cluster.Name {

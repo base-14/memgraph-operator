@@ -199,7 +199,7 @@ func TestGetNonEmptyLinesVariations(t *testing.T) {
 func TestGetProjectDirFromE2EPath(t *testing.T) {
 	// Get original directory
 	origDir, _ := os.Getwd()
-	defer os.Chdir(origDir)
+	defer func() { _ = os.Chdir(origDir) }()
 
 	// Create a temp directory structure simulating test/e2e
 	tmpDir := t.TempDir()
