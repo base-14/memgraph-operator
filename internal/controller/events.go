@@ -12,6 +12,7 @@ const (
 	// StatefulSet events
 	EventReasonCreatingStatefulSet = "CreatingStatefulSet"
 	EventReasonScalingStatefulSet  = "ScalingStatefulSet"
+	EventReasonUpdatingImage       = "UpdatingImage"
 
 	// Replication events
 	EventReasonMainInstanceConfigured = "MainInstanceConfigured"

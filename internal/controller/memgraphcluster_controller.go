@@ -343,7 +343,10 @@ func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cl
 		return err
 	}
 
-	// Check if update is needed (replica count change)
+	// Check if update is needed
+	needsUpdate := false
+
+	// Check replica count change
 	if *existing.Spec.Replicas != *desired.Spec.Replicas {
 		log.Info("scaling StatefulSet",
 			zap.String("statefulset", existing.Name),
@@ -352,6 +355,24 @@ func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cl
 		existing.Spec.Replicas = desired.Spec.Replicas
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonScalingStatefulSet,
 			fmt.Sprintf("Scaling StatefulSet %s to %d replicas", existing.Name, *desired.Spec.Replicas))
+		needsUpdate = true
+	}
+
+	// Check image change
+	existingImage := existing.Spec.Template.Spec.Containers[0].Image
+	desiredImage := desired.Spec.Template.Spec.Containers[0].Image
+	if existingImage != desiredImage {
+		log.Info("updating StatefulSet image",
+			zap.String("statefulset", existing.Name),
+			zap.String("currentImage", existingImage),
+			zap.String("desiredImage", desiredImage))
+		existing.Spec.Template.Spec.Containers[0].Image = desiredImage
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonUpdatingImage,
+			fmt.Sprintf("Updating StatefulSet %s image to %s", existing.Name, desiredImage))
+		needsUpdate = true
+	}
+
+	if needsUpdate {
 		return r.Update(ctx, existing)
 	}
 
