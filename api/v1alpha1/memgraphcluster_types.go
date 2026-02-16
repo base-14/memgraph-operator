@@ -179,9 +179,18 @@ type SnapshotSpec struct {
 	// +optional
 	RetentionCount int32 `json:"retentionCount,omitempty"`
 
+	// ServiceAccountName is the Kubernetes service account to use for the snapshot CronJob pod.
+	// Required for both S3 (IRSA on EKS) and GCS (Workload Identity on GKE).
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
 	// S3 defines optional S3 backup configuration
 	// +optional
 	S3 *S3BackupSpec `json:"s3,omitempty"`
+
+	// GCS defines optional GCS backup configuration
+	// +optional
+	GCS *GCSBackupSpec `json:"gcs,omitempty"`
 }
 
 // S3BackupSpec defines S3 backup configuration
@@ -219,6 +228,22 @@ type S3BackupSpec struct {
 	RetentionDays int32 `json:"retentionDays,omitempty"`
 }
 
+// GCSBackupSpec defines GCS backup configuration
+type GCSBackupSpec struct {
+	// Enabled enables GCS backups
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Bucket is the GCS bucket name
+	// +optional
+	Bucket string `json:"bucket,omitempty"`
+
+	// Prefix is the path prefix within the bucket
+	// +kubebuilder:default="memgraph/snapshots"
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+}
+
 // MemgraphClusterStatus defines the observed state of MemgraphCluster
 type MemgraphClusterStatus struct {
 	// Phase is the current phase of the cluster
@@ -248,6 +273,10 @@ type MemgraphClusterStatus struct {
 	// LastS3BackupTime is the time of the last successful S3 backup
 	// +optional
 	LastS3BackupTime *metav1.Time `json:"lastS3BackupTime,omitempty"`
+
+	// LastGCSBackupTime is the time of the last successful GCS backup
+	// +optional
+	LastGCSBackupTime *metav1.Time `json:"lastGCSBackupTime,omitempty"`
 
 	// Validation contains real-time validation test results
 	// +optional

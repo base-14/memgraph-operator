@@ -1129,6 +1129,20 @@ spec:
                     default: true
                     description: Enabled enables periodic snapshots
                     type: boolean
+                  gcs:
+                    description: GCS defines optional GCS backup configuration
+                    properties:
+                      bucket:
+                        description: Bucket is the GCS bucket name
+                        type: string
+                      enabled:
+                        description: Enabled enables GCS backups
+                        type: boolean
+                      prefix:
+                        default: memgraph/snapshots
+                        description: Prefix is the path prefix within the bucket
+                        type: string
+                    type: object
                   retentionCount:
                     default: 5
                     description: RetentionCount is the number of snapshots to retain
@@ -1182,6 +1196,11 @@ spec:
                   schedule:
                     default: '*/15 * * * *'
                     description: Schedule is a cron expression for snapshot frequency
+                    type: string
+                  serviceAccountName:
+                    description: |-
+                      ServiceAccountName is the Kubernetes service account to use for the snapshot CronJob pod.
+                      Required for both S3 (IRSA on EKS) and GCS (Workload Identity on GKE).
                     type: string
                 type: object
               storage:
@@ -1302,6 +1321,11 @@ spec:
                   - type
                   type: object
                 type: array
+              lastGCSBackupTime:
+                description: LastGCSBackupTime is the time of the last successful
+                  GCS backup
+                format: date-time
+                type: string
               lastS3BackupTime:
                 description: LastS3BackupTime is the time of the last successful S3
                   backup

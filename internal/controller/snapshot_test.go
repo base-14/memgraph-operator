@@ -13,6 +13,11 @@ import (
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 )
 
+const (
+	testContainerNameCopySnapshots = "copy-snapshots"
+	testContainerNameRcloneUpload  = "rclone-upload"
+)
+
 func TestBuildSnapshotCronJob(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{
@@ -29,14 +34,13 @@ func TestBuildSnapshotCronJob(t *testing.T) {
 			},
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
 				Enabled:  true,
-				Schedule: "0 */6 * * *", // Every 6 hours
+				Schedule: "0 */6 * * *",
 			},
 		},
 	}
 
 	cronJob := buildSnapshotCronJob(cluster)
 
-	// Verify basic properties
 	if cronJob.Name != "test-cluster-snapshot" {
 		t.Errorf("expected name test-cluster-snapshot, got %s", cronJob.Name)
 	}
@@ -49,10 +53,9 @@ func TestBuildSnapshotCronJob(t *testing.T) {
 		t.Errorf("expected schedule '0 */6 * * *', got %s", cronJob.Spec.Schedule)
 	}
 
-	// Verify init containers (create-snapshot)
 	initContainers := cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers
 	if len(initContainers) != 1 {
-		t.Fatalf("expected 1 init container without S3, got %d", len(initContainers))
+		t.Fatalf("expected 1 init container without remote backup, got %d", len(initContainers))
 	}
 
 	if initContainers[0].Name != "create-snapshot" {
@@ -63,7 +66,6 @@ func TestBuildSnapshotCronJob(t *testing.T) {
 		t.Errorf("expected image 'memgraph/memgraph:2.21.0', got %s", initContainers[0].Image)
 	}
 
-	// Verify main container (complete)
 	containers := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers
 	if len(containers) != 1 {
 		t.Fatalf("expected 1 container, got %d", len(containers))
@@ -85,8 +87,9 @@ func TestBuildSnapshotCronJobWithS3(t *testing.T) {
 			Replicas: 3,
 			Image:    "memgraph/memgraph:2.21.0",
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled:  true,
-				Schedule: "*/15 * * * *",
+				Enabled:            true,
+				Schedule:           "*/15 * * * *",
+				ServiceAccountName: "memgraph-sa",
 				S3: &memgraphv1alpha1.S3BackupSpec{
 					Enabled:   true,
 					Bucket:    "my-backup-bucket",
@@ -100,7 +103,6 @@ func TestBuildSnapshotCronJobWithS3(t *testing.T) {
 
 	cronJob := buildSnapshotCronJob(cluster)
 
-	// Verify init containers (should have 2: create-snapshot and copy-snapshots)
 	initContainers := cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers
 	if len(initContainers) != 2 {
 		t.Fatalf("expected 2 init containers with S3, got %d", len(initContainers))
@@ -110,28 +112,26 @@ func TestBuildSnapshotCronJobWithS3(t *testing.T) {
 		t.Errorf("expected first init container name 'create-snapshot', got %s", initContainers[0].Name)
 	}
 
-	if initContainers[1].Name != "copy-snapshots" {
+	if initContainers[1].Name != testContainerNameCopySnapshots {
 		t.Errorf("expected second init container name 'copy-snapshots', got %s", initContainers[1].Name)
 	}
 
-	// Verify main container is s3-upload
+	// Verify main container is rclone-upload
 	containers := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers
 	if len(containers) != 1 {
 		t.Fatalf("expected 1 container, got %d", len(containers))
 	}
 
-	if containers[0].Name != "s3-upload" {
-		t.Errorf("expected container name 's3-upload', got %s", containers[0].Name)
+	if containers[0].Name != testContainerNameRcloneUpload {
+		t.Errorf("expected container name 'rclone-upload', got %s", containers[0].Name)
 	}
 
-	if containers[0].Image != defaultAWSCLIImage {
-		t.Errorf("expected image '%s', got %s", defaultAWSCLIImage, containers[0].Image)
+	if containers[0].Image != defaultRcloneImage {
+		t.Errorf("expected image '%s', got %s", defaultRcloneImage, containers[0].Image)
 	}
 
 	// Verify S3 environment variables are set
 	envVars := containers[0].Env
-
-	// Check for AWS credentials env vars
 	var hasAccessKey, hasSecretKey, hasRegion bool
 	for _, env := range envVars {
 		if env.Name == "AWS_ACCESS_KEY_ID" {
@@ -161,6 +161,12 @@ func TestBuildSnapshotCronJobWithS3(t *testing.T) {
 		t.Error("expected AWS_REGION env var with value us-west-2")
 	}
 
+	// Verify service account name
+	saName := cronJob.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName
+	if saName != "memgraph-sa" {
+		t.Errorf("expected serviceAccountName 'memgraph-sa', got %s", saName)
+	}
+
 	// Verify shared volume exists
 	volumes := cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes
 	var hasSnapshotDataVolume bool
@@ -177,6 +183,91 @@ func TestBuildSnapshotCronJobWithS3(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshotCronJobWithGCS(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+		},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Replicas: 2,
+			Image:    "memgraph/memgraph:3.7.2",
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				Enabled:            true,
+				Schedule:           "0 * * * *",
+				ServiceAccountName: "memgraph-sa",
+				GCS: &memgraphv1alpha1.GCSBackupSpec{
+					Enabled: true,
+					Bucket:  "my-gcs-bucket",
+					Prefix:  "kb/snapshots",
+				},
+			},
+		},
+	}
+
+	cronJob := buildSnapshotCronJob(cluster)
+
+	// Verify init containers (should have 2: create-snapshot and copy-snapshots)
+	initContainers := cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers
+	if len(initContainers) != 2 {
+		t.Fatalf("expected 2 init containers with GCS, got %d", len(initContainers))
+	}
+
+	if initContainers[1].Name != testContainerNameCopySnapshots {
+		t.Errorf("expected second init container name 'copy-snapshots', got %s", initContainers[1].Name)
+	}
+
+	// Verify main container is rclone-upload
+	containers := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers
+	if len(containers) != 1 {
+		t.Fatalf("expected 1 container, got %d", len(containers))
+	}
+
+	if containers[0].Name != testContainerNameRcloneUpload {
+		t.Errorf("expected container name 'rclone-upload', got %s", containers[0].Name)
+	}
+
+	if containers[0].Image != defaultRcloneImage {
+		t.Errorf("expected image '%s', got %s", defaultRcloneImage, containers[0].Image)
+	}
+
+	// GCS uses Workload Identity - no env vars needed
+	if len(containers[0].Env) != 0 {
+		t.Errorf("expected 0 env vars for GCS (uses Workload Identity), got %d", len(containers[0].Env))
+	}
+
+	// Verify rclone command uses GCS backend
+	if !strings.Contains(containers[0].Args[0], ":gcs:my-gcs-bucket") {
+		t.Error("expected command to contain ':gcs:my-gcs-bucket'")
+	}
+
+	if !strings.Contains(containers[0].Args[0], "--gcs-env-auth") {
+		t.Error("expected command to contain '--gcs-env-auth'")
+	}
+
+	if !strings.Contains(containers[0].Args[0], "kb/snapshots") {
+		t.Error("expected command to contain 'kb/snapshots' prefix")
+	}
+
+	// Verify service account name
+	saName := cronJob.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName
+	if saName != "memgraph-sa" {
+		t.Errorf("expected serviceAccountName 'memgraph-sa', got %s", saName)
+	}
+
+	// Verify shared volume
+	volumes := cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes
+	var hasSnapshotDataVolume bool
+	for _, vol := range volumes {
+		if vol.Name == snapshotDataVolume {
+			hasSnapshotDataVolume = true
+		}
+	}
+	if !hasSnapshotDataVolume {
+		t.Error("expected snapshot-data volume")
+	}
+}
+
 func TestBuildSnapshotCronJobDefaults(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{
@@ -186,19 +277,16 @@ func TestBuildSnapshotCronJobDefaults(t *testing.T) {
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
 				Enabled: true,
-				// No schedule specified - should use default
 			},
 		},
 	}
 
 	cronJob := buildSnapshotCronJob(cluster)
 
-	// Verify default schedule
 	if cronJob.Spec.Schedule != "*/15 * * * *" {
 		t.Errorf("expected default schedule '*/15 * * * *', got %s", cronJob.Spec.Schedule)
 	}
 
-	// Verify default image for init container
 	initContainers := cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers
 	if len(initContainers) != 1 {
 		t.Fatalf("expected 1 init container, got %d", len(initContainers))
@@ -206,6 +294,49 @@ func TestBuildSnapshotCronJobDefaults(t *testing.T) {
 
 	if initContainers[0].Image != "memgraph/memgraph:2.21.0" {
 		t.Errorf("expected default image 'memgraph/memgraph:2.21.0', got %s", initContainers[0].Image)
+	}
+}
+
+func TestBuildSnapshotCronJobServiceAccountName(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+		},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				Enabled:            true,
+				ServiceAccountName: "custom-sa",
+			},
+		},
+	}
+
+	cronJob := buildSnapshotCronJob(cluster)
+
+	saName := cronJob.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName
+	if saName != "custom-sa" {
+		t.Errorf("expected serviceAccountName 'custom-sa', got %s", saName)
+	}
+}
+
+func TestBuildSnapshotCronJobNoServiceAccountName(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+		},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				Enabled: true,
+			},
+		},
+	}
+
+	cronJob := buildSnapshotCronJob(cluster)
+
+	saName := cronJob.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName
+	if saName != "" {
+		t.Errorf("expected empty serviceAccountName, got %s", saName)
 	}
 }
 
@@ -225,21 +356,18 @@ func TestBuildSnapshotInitContainers(t *testing.T) {
 	initContainers := buildSnapshotInitContainers(cluster, "memgraph/memgraph:2.21.0")
 
 	if len(initContainers) != 1 {
-		t.Fatalf("expected 1 init container without S3, got %d", len(initContainers))
+		t.Fatalf("expected 1 init container without remote backup, got %d", len(initContainers))
 	}
 
-	// Verify the create-snapshot container command references write service
 	args := initContainers[0].Args
 	if len(args) != 1 {
 		t.Fatalf("expected 1 arg, got %d", len(args))
 	}
 
-	// Command should contain the write service name
 	if !strings.Contains(args[0], "my-cluster-write") {
 		t.Error("expected command to contain 'my-cluster-write'")
 	}
 
-	// Command should contain CREATE SNAPSHOT
 	if !strings.Contains(args[0], "CREATE SNAPSHOT") {
 		t.Error("expected command to contain 'CREATE SNAPSHOT'")
 	}
@@ -268,8 +396,7 @@ func TestBuildSnapshotInitContainersWithS3(t *testing.T) {
 		t.Fatalf("expected 2 init containers with S3, got %d", len(initContainers))
 	}
 
-	// Second container should be copy-snapshots using bitnami/kubectl
-	if initContainers[1].Name != "copy-snapshots" {
+	if initContainers[1].Name != testContainerNameCopySnapshots {
 		t.Errorf("expected second init container name 'copy-snapshots', got %s", initContainers[1].Name)
 	}
 
@@ -277,7 +404,6 @@ func TestBuildSnapshotInitContainersWithS3(t *testing.T) {
 		t.Errorf("expected image 'bitnami/kubectl:latest', got %s", initContainers[1].Image)
 	}
 
-	// Verify volume mount
 	if len(initContainers[1].VolumeMounts) != 1 {
 		t.Fatalf("expected 1 volume mount, got %d", len(initContainers[1].VolumeMounts))
 	}
@@ -287,7 +413,35 @@ func TestBuildSnapshotInitContainersWithS3(t *testing.T) {
 	}
 }
 
-func TestBuildS3UploadContainer(t *testing.T) {
+func TestBuildSnapshotInitContainersWithGCS(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-cluster",
+			Namespace: "default",
+		},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				Enabled: true,
+				GCS: &memgraphv1alpha1.GCSBackupSpec{
+					Enabled: true,
+					Bucket:  "gcs-bucket",
+				},
+			},
+		},
+	}
+
+	initContainers := buildSnapshotInitContainers(cluster, "memgraph/memgraph:2.21.0")
+
+	if len(initContainers) != 2 {
+		t.Fatalf("expected 2 init containers with GCS, got %d", len(initContainers))
+	}
+
+	if initContainers[1].Name != testContainerNameCopySnapshots {
+		t.Errorf("expected second init container name 'copy-snapshots', got %s", initContainers[1].Name)
+	}
+}
+
+func TestBuildRcloneUploadContainerS3(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "my-cluster",
@@ -298,6 +452,7 @@ func TestBuildS3UploadContainer(t *testing.T) {
 				S3: &memgraphv1alpha1.S3BackupSpec{
 					Enabled:  true,
 					Bucket:   "backup-bucket",
+					Region:   "us-west-2",
 					Prefix:   "memgraph/snapshots",
 					Endpoint: "https://minio.local:9000",
 				},
@@ -305,18 +460,16 @@ func TestBuildS3UploadContainer(t *testing.T) {
 		},
 	}
 
-	container := buildS3UploadContainer(cluster)
+	container := buildRcloneUploadContainer(cluster, "s3")
 
-	// Verify container name and image
-	if container.Name != "s3-upload" {
-		t.Errorf("expected container name 's3-upload', got %s", container.Name)
+	if container.Name != testContainerNameRcloneUpload {
+		t.Errorf("expected container name 'rclone-upload', got %s", container.Name)
 	}
 
-	if container.Image != defaultAWSCLIImage {
-		t.Errorf("expected image '%s', got %s", defaultAWSCLIImage, container.Image)
+	if container.Image != defaultRcloneImage {
+		t.Errorf("expected image '%s', got %s", defaultRcloneImage, container.Image)
 	}
 
-	// Verify command contains bucket
 	if len(container.Args) != 1 {
 		t.Fatalf("expected 1 arg, got %d", len(container.Args))
 	}
@@ -325,12 +478,18 @@ func TestBuildS3UploadContainer(t *testing.T) {
 		t.Error("expected command to contain 'backup-bucket'")
 	}
 
-	// Verify aws s3 cp command
-	if !strings.Contains(container.Args[0], "aws s3 cp") {
-		t.Error("expected command to contain 'aws s3 cp'")
+	if !strings.Contains(container.Args[0], "rclone copy") {
+		t.Error("expected command to contain 'rclone copy'")
 	}
 
-	// Verify volume mount
+	if !strings.Contains(container.Args[0], "--s3-endpoint https://minio.local:9000") {
+		t.Error("expected command to contain '--s3-endpoint https://minio.local:9000'")
+	}
+
+	if !strings.Contains(container.Args[0], "--s3-region us-west-2") {
+		t.Error("expected command to contain '--s3-region us-west-2'")
+	}
+
 	if len(container.VolumeMounts) != 1 {
 		t.Fatalf("expected 1 volume mount, got %d", len(container.VolumeMounts))
 	}
@@ -340,33 +499,94 @@ func TestBuildS3UploadContainer(t *testing.T) {
 	}
 }
 
-func TestBuildS3EndpointConfig(t *testing.T) {
-	tests := []struct {
-		name     string
-		s3       *memgraphv1alpha1.S3BackupSpec
-		expected string
-	}{
-		{
-			name:     "no endpoint",
-			s3:       &memgraphv1alpha1.S3BackupSpec{},
-			expected: "",
+func TestBuildRcloneUploadContainerGCS(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-cluster",
+			Namespace: "default",
 		},
-		{
-			name: "with endpoint",
-			s3: &memgraphv1alpha1.S3BackupSpec{
-				Endpoint: "https://minio.local:9000",
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				GCS: &memgraphv1alpha1.GCSBackupSpec{
+					Enabled: true,
+					Bucket:  "gcs-backup-bucket",
+					Prefix:  "kb/snapshots",
+				},
 			},
-			expected: `export AWS_ENDPOINT_URL="https://minio.local:9000"`,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := buildS3EndpointConfig(tt.s3)
-			if result != tt.expected {
-				t.Errorf("expected %q, got %q", tt.expected, result)
-			}
-		})
+	container := buildRcloneUploadContainer(cluster, "gcs")
+
+	if container.Name != testContainerNameRcloneUpload {
+		t.Errorf("expected container name 'rclone-upload', got %s", container.Name)
+	}
+
+	if container.Image != defaultRcloneImage {
+		t.Errorf("expected image '%s', got %s", defaultRcloneImage, container.Image)
+	}
+
+	if !strings.Contains(container.Args[0], ":gcs:gcs-backup-bucket") {
+		t.Error("expected command to contain ':gcs:gcs-backup-bucket'")
+	}
+
+	if !strings.Contains(container.Args[0], "--gcs-env-auth") {
+		t.Error("expected command to contain '--gcs-env-auth'")
+	}
+
+	if !strings.Contains(container.Args[0], "kb/snapshots") {
+		t.Error("expected command to contain 'kb/snapshots' prefix")
+	}
+
+	// GCS should have no env vars (uses Workload Identity)
+	if len(container.Env) != 0 {
+		t.Errorf("expected 0 env vars for GCS, got %d", len(container.Env))
+	}
+}
+
+func TestBuildRcloneS3CommandDefaultPrefix(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-cluster",
+			Namespace: "default",
+		},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				S3: &memgraphv1alpha1.S3BackupSpec{
+					Enabled: true,
+					Bucket:  "backup-bucket",
+				},
+			},
+		},
+	}
+
+	cmd := buildRcloneS3Command(cluster)
+
+	if !strings.Contains(cmd, "memgraph/snapshots") {
+		t.Error("expected default prefix 'memgraph/snapshots' in command")
+	}
+}
+
+func TestBuildRcloneGCSCommandDefaultPrefix(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-cluster",
+			Namespace: "default",
+		},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				GCS: &memgraphv1alpha1.GCSBackupSpec{
+					Enabled: true,
+					Bucket:  "gcs-bucket",
+				},
+			},
+		},
+	}
+
+	cmd := buildRcloneGCSCommand(cluster)
+
+	if !strings.Contains(cmd, "memgraph/snapshots") {
+		t.Error("expected default prefix 'memgraph/snapshots' in command")
 	}
 }
 
@@ -390,7 +610,6 @@ func TestBuildS3Env(t *testing.T) {
 
 	envVars := buildS3Env(cluster)
 
-	// Should have 3 env vars: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
 	if len(envVars) != 3 {
 		t.Fatalf("expected 3 env vars, got %d", len(envVars))
 	}
@@ -400,7 +619,6 @@ func TestBuildS3Env(t *testing.T) {
 		envMap[env.Name] = env
 	}
 
-	// Check AWS_ACCESS_KEY_ID
 	if env, ok := envMap["AWS_ACCESS_KEY_ID"]; !ok {
 		t.Error("expected AWS_ACCESS_KEY_ID")
 	} else if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
@@ -409,7 +627,6 @@ func TestBuildS3Env(t *testing.T) {
 		t.Errorf("expected key 'access-key-id', got %s", env.ValueFrom.SecretKeyRef.Key)
 	}
 
-	// Check AWS_SECRET_ACCESS_KEY
 	if env, ok := envMap["AWS_SECRET_ACCESS_KEY"]; !ok {
 		t.Error("expected AWS_SECRET_ACCESS_KEY")
 	} else if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
@@ -418,7 +635,6 @@ func TestBuildS3Env(t *testing.T) {
 		t.Errorf("expected key 'secret-access-key', got %s", env.ValueFrom.SecretKeyRef.Key)
 	}
 
-	// Check AWS_REGION
 	if env, ok := envMap["AWS_REGION"]; !ok {
 		t.Error("expected AWS_REGION")
 	} else if env.Value != "us-east-1" {
@@ -433,7 +649,7 @@ func TestBuildSnapshotVolumes(t *testing.T) {
 		expectedVolumes int
 	}{
 		{
-			name: "no S3 - no volumes",
+			name: "no remote backup - no volumes",
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
@@ -452,6 +668,21 @@ func TestBuildSnapshotVolumes(t *testing.T) {
 						S3: &memgraphv1alpha1.S3BackupSpec{
 							Enabled: true,
 							Bucket:  "test-bucket",
+						},
+					},
+				},
+			},
+			expectedVolumes: 1,
+		},
+		{
+			name: "with GCS - has snapshot-data volume",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Snapshot: memgraphv1alpha1.SnapshotSpec{
+						Enabled: true,
+						GCS: &memgraphv1alpha1.GCSBackupSpec{
+							Enabled: true,
+							Bucket:  "gcs-bucket",
 						},
 					},
 				},
@@ -486,7 +717,7 @@ func TestBuildSnapshotMainContainers(t *testing.T) {
 		expectedContainer string
 	}{
 		{
-			name: "without S3 - complete container",
+			name: "without remote backup - complete container",
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
@@ -497,7 +728,7 @@ func TestBuildSnapshotMainContainers(t *testing.T) {
 			expectedContainer: "complete",
 		},
 		{
-			name: "with S3 - s3-upload container",
+			name: "with S3 - rclone-upload container",
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
@@ -509,7 +740,22 @@ func TestBuildSnapshotMainContainers(t *testing.T) {
 					},
 				},
 			},
-			expectedContainer: "s3-upload",
+			expectedContainer: testContainerNameRcloneUpload,
+		},
+		{
+			name: "with GCS - rclone-upload container",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Snapshot: memgraphv1alpha1.SnapshotSpec{
+						Enabled: true,
+						GCS: &memgraphv1alpha1.GCSBackupSpec{
+							Enabled: true,
+							Bucket:  "gcs-bucket",
+						},
+					},
+				},
+			},
+			expectedContainer: testContainerNameRcloneUpload,
 		},
 	}
 
@@ -526,6 +772,68 @@ func TestBuildSnapshotMainContainers(t *testing.T) {
 	}
 }
 
+func TestIsRemoteBackupEnabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		cluster  *memgraphv1alpha1.MemgraphCluster
+		expected bool
+	}{
+		{
+			name: "no backup",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "S3 enabled",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Snapshot: memgraphv1alpha1.SnapshotSpec{
+						Enabled: true,
+						S3:      &memgraphv1alpha1.S3BackupSpec{Enabled: true, Bucket: "b"},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "GCS enabled",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Snapshot: memgraphv1alpha1.SnapshotSpec{
+						Enabled: true,
+						GCS:     &memgraphv1alpha1.GCSBackupSpec{Enabled: true, Bucket: "b"},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "S3 present but disabled",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Snapshot: memgraphv1alpha1.SnapshotSpec{
+						Enabled: true,
+						S3:      &memgraphv1alpha1.S3BackupSpec{Enabled: false},
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRemoteBackupEnabled(tt.cluster); got != tt.expected {
+				t.Errorf("isRemoteBackupEnabled() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBuildS3EnvWithoutSecretRef(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
@@ -533,7 +841,6 @@ func TestBuildS3EnvWithoutSecretRef(t *testing.T) {
 				S3: &memgraphv1alpha1.S3BackupSpec{
 					Enabled: true,
 					Region:  "eu-west-1",
-					// No SecretRef
 				},
 			},
 		},
@@ -541,7 +848,6 @@ func TestBuildS3EnvWithoutSecretRef(t *testing.T) {
 
 	envVars := buildS3Env(cluster)
 
-	// Should have 1 env var: AWS_REGION
 	if len(envVars) != 1 {
 		t.Fatalf("expected 1 env var, got %d", len(envVars))
 	}
@@ -572,50 +878,22 @@ func TestBuildS3EnvWithNilS3(t *testing.T) {
 }
 
 func TestPtr(t *testing.T) {
-	// Test with bool
 	b := true
 	ptrB := ptr(b)
 	if ptrB == nil || *ptrB != true {
 		t.Error("ptr() for bool failed")
 	}
 
-	// Test with int
 	i := 42
 	ptrI := ptr(i)
 	if ptrI == nil || *ptrI != 42 {
 		t.Error("ptr() for int failed")
 	}
 
-	// Test with string
 	s := "test"
 	ptrS := ptr(s)
 	if ptrS == nil || *ptrS != "test" {
 		t.Error("ptr() for string failed")
-	}
-}
-
-func TestBuildS3UploadContainerDefaultPrefix(t *testing.T) {
-	cluster := &memgraphv1alpha1.MemgraphCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "my-cluster",
-			Namespace: "default",
-		},
-		Spec: memgraphv1alpha1.MemgraphClusterSpec{
-			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				S3: &memgraphv1alpha1.S3BackupSpec{
-					Enabled: true,
-					Bucket:  "backup-bucket",
-					// No prefix - should use default
-				},
-			},
-		},
-	}
-
-	container := buildS3UploadContainer(cluster)
-
-	// Verify default prefix is used
-	if !strings.Contains(container.Args[0], "memgraph/snapshots") {
-		t.Error("expected default prefix 'memgraph/snapshots' in command")
 	}
 }
 

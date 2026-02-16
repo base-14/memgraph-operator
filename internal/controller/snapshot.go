@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	// Default AWS CLI image for S3 uploads
-	defaultAWSCLIImage = "amazon/aws-cli:latest"
+	// Default rclone image for S3/GCS uploads
+	defaultRcloneImage = "rclone/rclone:1.73.0"
 
 	// Shared volume name for snapshot data between containers
 	snapshotDataVolume = "snapshot-data"
@@ -104,7 +104,8 @@ func buildSnapshotCronJob(cluster *memgraphv1alpha1.MemgraphCluster) *batchv1.Cr
 							Labels: labelsForCluster(cluster),
 						},
 						Spec: corev1.PodSpec{
-							RestartPolicy: corev1.RestartPolicyOnFailure,
+							RestartPolicy:      corev1.RestartPolicyOnFailure,
+							ServiceAccountName: cluster.Spec.Snapshot.ServiceAccountName,
 							SecurityContext: &corev1.PodSecurityContext{
 								RunAsUser:    &runAsUser,
 								RunAsGroup:   &runAsGroup,
@@ -151,8 +152,8 @@ echo "Snapshot created successfully at $(date)"
 		},
 	}
 
-	// Init container 2: Copy snapshot files to shared volume (if S3 enabled)
-	if cluster.Spec.Snapshot.S3 != nil && cluster.Spec.Snapshot.S3.Enabled {
+	// Init container 2: Copy snapshot files to shared volume (if S3 or GCS enabled)
+	if isRemoteBackupEnabled(cluster) {
 		// Use bitnami/kubectl for copying files from the main pod
 		copyCmd := fmt.Sprintf(`
 set -e
@@ -202,12 +203,14 @@ ls -la /snapshot-data/snapshots/
 
 // buildSnapshotMainContainers builds the main containers for the snapshot job
 func buildSnapshotMainContainers(cluster *memgraphv1alpha1.MemgraphCluster) []corev1.Container {
-	// If S3 is enabled, main container uploads to S3
 	if cluster.Spec.Snapshot.S3 != nil && cluster.Spec.Snapshot.S3.Enabled {
-		return []corev1.Container{buildS3UploadContainer(cluster)}
+		return []corev1.Container{buildRcloneUploadContainer(cluster, "s3")}
 	}
 
-	// Otherwise, just a completion container
+	if cluster.Spec.Snapshot.GCS != nil && cluster.Spec.Snapshot.GCS.Enabled {
+		return []corev1.Container{buildRcloneUploadContainer(cluster, "gcs")}
+	}
+
 	return []corev1.Container{
 		{
 			Name:    "complete",
@@ -224,50 +227,42 @@ func buildSnapshotMainContainers(cluster *memgraphv1alpha1.MemgraphCluster) []co
 	}
 }
 
-// buildS3UploadContainer builds the S3 upload container
-func buildS3UploadContainer(cluster *memgraphv1alpha1.MemgraphCluster) corev1.Container {
-	s3 := cluster.Spec.Snapshot.S3
-	prefix := s3.Prefix
-	if prefix == "" {
-		prefix = "memgraph/snapshots"
+// isRemoteBackupEnabled returns true if either S3 or GCS backup is enabled
+func isRemoteBackupEnabled(cluster *memgraphv1alpha1.MemgraphCluster) bool {
+	if cluster.Spec.Snapshot.S3 != nil && cluster.Spec.Snapshot.S3.Enabled {
+		return true
+	}
+	if cluster.Spec.Snapshot.GCS != nil && cluster.Spec.Snapshot.GCS.Enabled {
+		return true
+	}
+	return false
+}
+
+// buildRcloneUploadContainer builds the rclone upload container for S3 or GCS
+func buildRcloneUploadContainer(cluster *memgraphv1alpha1.MemgraphCluster, backend string) corev1.Container {
+	var rcloneCmd string
+	var envVars []corev1.EnvVar
+
+	switch backend {
+	case "s3":
+		rcloneCmd = buildRcloneS3Command(cluster)
+		envVars = buildS3Env(cluster)
+	case "gcs":
+		rcloneCmd = buildRcloneGCSCommand(cluster)
 	}
 
-	// Build S3 upload command
-	s3Cmd := fmt.Sprintf(`
-set -e
-
-TIMESTAMP=$(cat /snapshot-data/timestamp)
-BACKUP_PATH="s3://%s/%s/%s/${TIMESTAMP}"
-
-echo "Uploading snapshot to ${BACKUP_PATH}..."
-
-# Configure endpoint if specified
-%s
-
-# Upload to S3
-if [ -d "/snapshot-data/snapshots" ] && [ "$(ls -A /snapshot-data/snapshots 2>/dev/null)" ]; then
-  aws s3 cp /snapshot-data/snapshots/ ${BACKUP_PATH}/snapshots/ --recursive
-  echo "Snapshot uploaded successfully to ${BACKUP_PATH}"
-else
-  echo "No snapshot files found to upload"
-  exit 1
-fi
-
-echo "S3 backup completed at $(date)"
-`, s3.Bucket, prefix, cluster.Name, buildS3EndpointConfig(s3))
-
 	return corev1.Container{
-		Name:    "s3-upload",
-		Image:   defaultAWSCLIImage,
+		Name:    "rclone-upload",
+		Image:   defaultRcloneImage,
 		Command: []string{"/bin/sh", "-c"},
-		Args:    []string{s3Cmd},
+		Args:    []string{rcloneCmd},
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr(false),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
 			},
 		},
-		Env: buildS3Env(cluster),
+		Env: envVars,
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      snapshotDataVolume,
@@ -277,12 +272,69 @@ echo "S3 backup completed at $(date)"
 	}
 }
 
+// buildRcloneS3Command builds the rclone command for S3 uploads
+func buildRcloneS3Command(cluster *memgraphv1alpha1.MemgraphCluster) string {
+	s3 := cluster.Spec.Snapshot.S3
+	prefix := s3.Prefix
+	if prefix == "" {
+		prefix = "memgraph/snapshots"
+	}
+
+	endpointFlag := ""
+	if s3.Endpoint != "" {
+		endpointFlag = fmt.Sprintf("--s3-endpoint %s", s3.Endpoint)
+	}
+
+	regionFlag := ""
+	if s3.Region != "" {
+		regionFlag = fmt.Sprintf("--s3-region %s", s3.Region)
+	}
+
+	return fmt.Sprintf(`
+set -e
+TIMESTAMP=$(cat /snapshot-data/timestamp)
+DEST=":s3:%s/%s/%s/${TIMESTAMP}/snapshots"
+echo "Uploading snapshot to ${DEST}..."
+if [ -d "/snapshot-data/snapshots" ] && [ "$(ls -A /snapshot-data/snapshots 2>/dev/null)" ]; then
+  rclone copy /snapshot-data/snapshots/ "${DEST}" --s3-provider AWS --s3-env-auth %s %s -v
+  echo "Snapshot uploaded successfully"
+else
+  echo "No snapshot files found to upload"
+  exit 1
+fi
+echo "S3 backup completed at $(date)"
+`, s3.Bucket, prefix, cluster.Name, regionFlag, endpointFlag)
+}
+
+// buildRcloneGCSCommand builds the rclone command for GCS uploads
+func buildRcloneGCSCommand(cluster *memgraphv1alpha1.MemgraphCluster) string {
+	gcs := cluster.Spec.Snapshot.GCS
+	prefix := gcs.Prefix
+	if prefix == "" {
+		prefix = "memgraph/snapshots"
+	}
+
+	return fmt.Sprintf(`
+set -e
+TIMESTAMP=$(cat /snapshot-data/timestamp)
+DEST=":gcs:%s/%s/%s/${TIMESTAMP}/snapshots"
+echo "Uploading snapshot to ${DEST}..."
+if [ -d "/snapshot-data/snapshots" ] && [ "$(ls -A /snapshot-data/snapshots 2>/dev/null)" ]; then
+  rclone copy /snapshot-data/snapshots/ "${DEST}" --gcs-env-auth -v
+  echo "Snapshot uploaded successfully"
+else
+  echo "No snapshot files found to upload"
+  exit 1
+fi
+echo "GCS backup completed at $(date)"
+`, gcs.Bucket, prefix, cluster.Name)
+}
+
 // buildSnapshotVolumes builds the volumes for the snapshot job
 func buildSnapshotVolumes(cluster *memgraphv1alpha1.MemgraphCluster) []corev1.Volume {
 	var volumes []corev1.Volume
 
-	// Add shared volume if S3 is enabled
-	if cluster.Spec.Snapshot.S3 != nil && cluster.Spec.Snapshot.S3.Enabled {
+	if isRemoteBackupEnabled(cluster) {
 		volumes = append(volumes, corev1.Volume{
 			Name: snapshotDataVolume,
 			VolumeSource: corev1.VolumeSource{
@@ -292,14 +344,6 @@ func buildSnapshotVolumes(cluster *memgraphv1alpha1.MemgraphCluster) []corev1.Vo
 	}
 
 	return volumes
-}
-
-// buildS3EndpointConfig builds AWS CLI endpoint configuration
-func buildS3EndpointConfig(s3 *memgraphv1alpha1.S3BackupSpec) string {
-	if s3.Endpoint == "" {
-		return ""
-	}
-	return fmt.Sprintf(`export AWS_ENDPOINT_URL="%s"`, s3.Endpoint)
 }
 
 // buildS3Env builds environment variables for the S3 upload container
@@ -312,7 +356,6 @@ func buildS3Env(cluster *memgraphv1alpha1.MemgraphCluster) []corev1.EnvVar {
 
 	s3 := cluster.Spec.Snapshot.S3
 
-	// Add S3 credentials if configured
 	if s3.SecretRef != nil {
 		envVars = append(envVars,
 			corev1.EnvVar{
@@ -375,9 +418,10 @@ func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context
 		return err
 	}
 
-	// Update if schedule or S3 config changed
+	// Update if schedule, backup config, or service account changed
 	needsUpdate := existing.Spec.Schedule != desired.Spec.Schedule ||
-		len(existing.Spec.JobTemplate.Spec.Template.Spec.Containers) != len(desired.Spec.JobTemplate.Spec.Template.Spec.Containers)
+		len(existing.Spec.JobTemplate.Spec.Template.Spec.Containers) != len(desired.Spec.JobTemplate.Spec.Template.Spec.Containers) ||
+		existing.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName != desired.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName
 
 	if needsUpdate {
 		log.Info("updating snapshot CronJob",
