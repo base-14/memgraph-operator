@@ -35,18 +35,24 @@ func NewClient(config *rest.Config) (*Client, error) {
 	}, nil
 }
 
-// ExecuteQuery executes a Cypher query on a Memgraph instance
+// ExecuteQuery executes a Cypher query on a Memgraph instance using the
+// default tabular output format. Most callers want this.
 func (c *Client) ExecuteQuery(ctx context.Context, namespace, podName, query string) (string, error) {
+	return c.executeQueryWithFormat(ctx, namespace, podName, query, "tabular")
+}
+
+// executeQueryWithFormat executes a Cypher query and returns the raw stdout.
+// format must be one of mgconsole's supported output formats: "tabular" or "csv".
+func (c *Client) executeQueryWithFormat(ctx context.Context, namespace, podName, query, format string) (string, error) {
 	cmd := []string{
 		"mgconsole",
 		"--host", "127.0.0.1",
 		"--port", "7687",
 		"--use-ssl=false",
 		"--no-history",
-		"--output-format", "tabular",
+		"--output-format", format,
 	}
 
-	// Pass query via stdin
 	stdin := strings.NewReader(query + "\n")
 
 	stdout, stderr, err := c.execInPod(ctx, namespace, podName, "memgraph", cmd, stdin)
