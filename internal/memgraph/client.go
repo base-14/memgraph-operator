@@ -112,12 +112,27 @@ func (c *Client) UnregisterReplica(ctx context.Context, namespace, mainPodName, 
 	return nil
 }
 
-// ReplicaInfo contains information about a registered replica
+// ReplicaDatabaseStatus is the per-database replication state reported by Memgraph 3.x
+// in the `data_info` cell of SHOW REPLICAS.
+type ReplicaDatabaseStatus struct {
+	Status string // "ready" | "replicating" | "recovery" | "invalid" | "" (unknown)
+	Behind int64  // negative values are valid in Memgraph but are not used for classification
+	Ts     int64
+}
+
+// ReplicaInfo contains information about a registered replica.
+// In Memgraph 3.x, replication state is per-database under DataInfo.
+// An empty (non-nil) DataInfo map means the main has not opened a data channel.
 type ReplicaInfo struct {
-	Name   string
-	Host   string
-	Port   int
-	Mode   string
+	Name     string
+	Host     string                           // mgconsole's socket_address verbatim (host:port)
+	Mode     string                           // sync_mode: async | sync | strict_sync
+	DataInfo map[string]ReplicaDatabaseStatus // keyed by database name
+
+	// Status is a transitional field derived by the parser from DataInfo:
+	// the status of the "memgraph" default database, or "" if DataInfo is empty.
+	// Existing callers read this; the classifier in a later task will use DataInfo
+	// directly and this field will be removed.
 	Status string
 }
 
