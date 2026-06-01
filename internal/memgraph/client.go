@@ -5,7 +5,9 @@ package memgraph
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -152,16 +154,14 @@ type StorageInfo struct {
 	IsolationLevel         string
 }
 
-// ShowReplicas returns the list of registered replicas from the main instance
+// ShowReplicas returns the list of registered replicas from the main instance.
+// Uses CSV output format so the Memgraph 3.x data_info column can be parsed reliably.
 func (c *Client) ShowReplicas(ctx context.Context, namespace, mainPodName string) ([]ReplicaInfo, error) {
-	query := "SHOW REPLICAS;"
-
-	output, err := c.ExecuteQuery(ctx, namespace, mainPodName, query)
+	output, err := c.executeQueryWithFormat(ctx, namespace, mainPodName, "SHOW REPLICAS;", "csv")
 	if err != nil {
 		return nil, fmt.Errorf("failed to show replicas: %w", err)
 	}
-
-	return parseShowReplicasOutput(output), nil
+	return parseShowReplicasCSV(output)
 }
 
 // GetReplicationRole returns the current replication role of the instance
@@ -400,38 +400,74 @@ func applyMemoryUnit(num float64, unit string) int64 {
 	return int64(num)
 }
 
-// parseShowReplicasOutput parses the output of SHOW REPLICAS command
-func parseShowReplicasOutput(output string) []ReplicaInfo {
-	var replicas []ReplicaInfo
+// dataInfoEntryRe matches a per-database entry inside the `data_info` Cypher map literal.
+// Example input cell: {memgraph: {behind: -8, status: "recovery", ts: 27335187}}
+// The regex captures: 1=db name, 2=behind, 3=status, 4=ts. Field order inside the
+// inner map is fixed by Memgraph's SHOW REPLICAS output.
+var dataInfoEntryRe = regexp.MustCompile(`(\w+):\s*\{\s*behind:\s*(-?\d+),\s*status:\s*"(\w+)",\s*ts:\s*(\d+)\s*\}`)
 
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "+") || strings.HasPrefix(line, "|") && strings.Contains(line, "name") {
+// parseShowReplicasCSV parses mgconsole's `--output-format csv` output for SHOW REPLICAS
+// against Memgraph 3.x. Columns: name, socket_address, sync_mode, system_info, data_info.
+// The data_info cell is a Cypher map literal (not JSON), parsed by regex.
+//
+// The transitional ReplicaInfo.Status field is derived from DataInfo["memgraph"].Status,
+// or left as the zero value ("") if DataInfo is empty.
+func parseShowReplicasCSV(output string) ([]ReplicaInfo, error) {
+	if strings.TrimSpace(output) == "" {
+		return nil, nil
+	}
+
+	reader := csv.NewReader(strings.NewReader(output))
+	reader.FieldsPerRecord = -1 // allow variable widths defensively
+
+	rows, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse SHOW REPLICAS CSV: %w", err)
+	}
+
+	var replicas []ReplicaInfo
+	for i, row := range rows {
+		if len(row) < 5 {
+			continue
+		}
+		// Skip the header row.
+		if i == 0 && row[0] == "name" {
 			continue
 		}
 
-		// Parse table row: | name | host | port | mode | status |
-		if strings.HasPrefix(line, "|") {
-			parts := strings.Split(line, "|")
-			if len(parts) >= 6 {
-				// Strip surrounding quotes from replica name if present
-				// Memgraph returns names like "replica_name" but DROP REPLICA expects unquoted names
-				name := strings.TrimSpace(parts[1])
-				name = strings.Trim(name, "\"")
+		name := strings.TrimSpace(row[0])
+		if name == "" {
+			continue
+		}
 
-				replica := ReplicaInfo{
-					Name:   name,
-					Host:   strings.TrimSpace(parts[2]),
-					Mode:   strings.TrimSpace(parts[4]),
-					Status: strings.TrimSpace(parts[5]),
-				}
-				if replica.Name != "" && replica.Name != "name" {
-					replicas = append(replicas, replica)
-				}
+		info := ReplicaInfo{
+			Name:     name,
+			Host:     strings.TrimSpace(row[1]),
+			Mode:     strings.TrimSpace(row[2]),
+			DataInfo: map[string]ReplicaDatabaseStatus{},
+		}
+
+		dataInfoCell := strings.TrimSpace(row[4])
+		// dataInfoCell is either "{}" or "{db: {...}, db2: {...}}"; the regex
+		// extracts each inner entry. Non-matching cells produce an empty map.
+		for _, m := range dataInfoEntryRe.FindAllStringSubmatch(dataInfoCell, -1) {
+			db := m[1]
+			behind, _ := strconv.ParseInt(m[2], 10, 64)
+			status := m[3]
+			ts, _ := strconv.ParseInt(m[4], 10, 64)
+			info.DataInfo[db] = ReplicaDatabaseStatus{
+				Status: status,
+				Behind: behind,
+				Ts:     ts,
 			}
 		}
-	}
 
-	return replicas
+		// Derive transitional Status field from the default "memgraph" database.
+		if def, ok := info.DataInfo["memgraph"]; ok {
+			info.Status = def.Status
+		}
+
+		replicas = append(replicas, info)
+	}
+	return replicas, nil
 }
