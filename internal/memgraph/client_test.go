@@ -339,6 +339,7 @@ func TestParseShowReplicasCSV(t *testing.T) {
 					Host:     "host-0.svc:10000",
 					Mode:     "async",
 					DataInfo: map[string]ReplicaDatabaseStatus{},
+					Status:   "",
 				},
 			},
 		},
@@ -355,6 +356,7 @@ func TestParseShowReplicasCSV(t *testing.T) {
 					DataInfo: map[string]ReplicaDatabaseStatus{
 						"memgraph": {Status: "recovery", Behind: -8, Ts: 27335187},
 					},
+					Status: "recovery",
 				},
 			},
 		},
@@ -371,6 +373,7 @@ func TestParseShowReplicasCSV(t *testing.T) {
 					DataInfo: map[string]ReplicaDatabaseStatus{
 						"memgraph": {Status: "ready", Behind: 0, Ts: 42},
 					},
+					Status: "ready",
 				},
 			},
 		},
@@ -387,6 +390,7 @@ func TestParseShowReplicasCSV(t *testing.T) {
 					DataInfo: map[string]ReplicaDatabaseStatus{
 						"memgraph": {Status: "invalid", Behind: 5, Ts: 100},
 					},
+					Status: "invalid",
 				},
 			},
 		},
@@ -403,6 +407,7 @@ func TestParseShowReplicasCSV(t *testing.T) {
 					Host:     "host-0.svc:10000",
 					Mode:     "async",
 					DataInfo: map[string]ReplicaDatabaseStatus{},
+					Status:   "",
 				},
 				{
 					Name: "replica_1",
@@ -411,6 +416,7 @@ func TestParseShowReplicasCSV(t *testing.T) {
 					DataInfo: map[string]ReplicaDatabaseStatus{
 						"memgraph": {Status: "ready", Behind: 0, Ts: 100},
 					},
+					Status: "ready",
 				},
 				{
 					Name: "replica_2",
@@ -419,6 +425,7 @@ func TestParseShowReplicasCSV(t *testing.T) {
 					DataInfo: map[string]ReplicaDatabaseStatus{
 						"memgraph": {Status: "replicating", Behind: 3, Ts: 97},
 					},
+					Status: "replicating",
 				},
 			},
 		},
@@ -453,6 +460,9 @@ func TestParseShowReplicasCSV(t *testing.T) {
 				}
 				if got[i].Mode != w.Mode {
 					t.Errorf("[%d].Mode = %q, want %q", i, got[i].Mode, w.Mode)
+				}
+				if got[i].Status != w.Status {
+					t.Errorf("[%d].Status = %q, want %q", i, got[i].Status, w.Status)
 				}
 				if len(got[i].DataInfo) != len(w.DataInfo) {
 					t.Errorf("[%d].DataInfo size = %d, want %d", i, len(got[i].DataInfo), len(w.DataInfo))
