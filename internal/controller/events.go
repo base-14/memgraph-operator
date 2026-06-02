@@ -20,7 +20,10 @@ const (
 	EventReasonReplicaUnregistered    = "ReplicaUnregistered"
 	EventReasonReplicationHealthy     = "ReplicationHealthy"
 	EventReasonReplicationError       = "ReplicationError"
-	EventReasonReplicaUnhealthy       = "ReplicaUnhealthy"
+	EventReasonReplicaUnhealthy       = "ReplicaUnhealthy" // deprecated; removed once CheckReplicationHealth is rewritten
+	EventReasonReplicaDataChannelDown = "ReplicaDataChannelDown"
+	EventReasonReplicaInvalid         = "ReplicaInvalid"
+	EventReasonReplicaBehindTooLong   = "ReplicaBehindTooLong"
 	EventReasonReplicationLagHigh     = "ReplicationLagHigh"
 
 	// Failover events
