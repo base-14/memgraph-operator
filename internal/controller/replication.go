@@ -245,6 +245,9 @@ func (rm *ReplicationManager) cleanupStaleReplicas(ctx context.Context, cluster 
 			} else {
 				rm.recorder.Event(cluster, corev1.EventTypeNormal, EventReasonReplicaUnregistered,
 					fmt.Sprintf("Stale replica %s unregistered from main", replica.Name))
+				if rm.metrics != nil {
+					rm.metrics.DeleteReplicaMetrics(cluster.Name, cluster.Namespace, replica.Name)
+				}
 			}
 		}
 	}
