@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
@@ -16,10 +18,18 @@ import (
 	"github.com/base14/memgraph-operator/internal/memgraph"
 )
 
-// ReplicationManager handles Memgraph replication configuration
+// ReplicationManager handles Memgraph replication configuration and health checks.
 type ReplicationManager struct {
 	client   *memgraph.Client
 	recorder record.EventRecorder
+
+	// states tracks per-replica timers for classification. Keyed by
+	// "namespace/name" -> replica name -> state. Lost on operator restart.
+	statesMu sync.Mutex
+	states   map[string]map[string]*replicaState
+
+	// now is the clock used for classification. Overridable in tests.
+	now func() time.Time
 }
 
 // NewReplicationManager creates a new ReplicationManager
@@ -27,6 +37,38 @@ func NewReplicationManager(client *memgraph.Client, recorder record.EventRecorde
 	return &ReplicationManager{
 		client:   client,
 		recorder: recorder,
+		states:   make(map[string]map[string]*replicaState),
+		now:      time.Now,
+	}
+}
+
+// stateFor returns (creating if necessary) the per-replica state entry.
+// Caller must hold statesMu.
+func (rm *ReplicationManager) stateFor(clusterKey, replicaName string) *replicaState {
+	byReplica, ok := rm.states[clusterKey]
+	if !ok {
+		byReplica = make(map[string]*replicaState)
+		rm.states[clusterKey] = byReplica
+	}
+	st, ok := byReplica[replicaName]
+	if !ok {
+		st = &replicaState{}
+		byReplica[replicaName] = st
+	}
+	return st
+}
+
+// pruneStates drops state entries for replicas no longer in the observed set.
+// Caller must hold statesMu.
+func (rm *ReplicationManager) pruneStates(clusterKey string, observed map[string]struct{}) {
+	byReplica, ok := rm.states[clusterKey]
+	if !ok {
+		return
+	}
+	for name := range byReplica {
+		if _, kept := observed[name]; !kept {
+			delete(byReplica, name)
+		}
 	}
 }
 
