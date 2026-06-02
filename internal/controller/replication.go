@@ -78,6 +78,26 @@ func (rm *ReplicationManager) pruneStates(clusterKey string, observed map[string
 	}
 }
 
+// DeleteClusterState removes all per-replica state for a cluster and
+// drops the matching per-replica metric series. Called during cluster deletion.
+func (rm *ReplicationManager) DeleteClusterState(clusterName, namespace string) {
+	clusterKey := namespace + "/" + clusterName
+
+	rm.statesMu.Lock()
+	defer rm.statesMu.Unlock()
+
+	byReplica, ok := rm.states[clusterKey]
+	if !ok {
+		return
+	}
+	if rm.metrics != nil {
+		for replicaName := range byReplica {
+			rm.metrics.DeleteReplicaMetrics(clusterName, namespace, replicaName)
+		}
+	}
+	delete(rm.states, clusterKey)
+}
+
 // Client returns the underlying memgraph client
 func (rm *ReplicationManager) Client() *memgraph.Client {
 	return rm.client
