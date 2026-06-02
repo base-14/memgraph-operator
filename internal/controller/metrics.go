@@ -59,6 +59,22 @@ var (
 		[]string{"cluster", "namespace"},
 	)
 
+	replicaDataChannelUpGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_data_channel_up",
+			Help: "1 if the replica's data channel is established (data_info populated and status not invalid/unknown), else 0",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
+	replicaBehindSecondsGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_behind_seconds",
+			Help: "Number of seconds the replica has continuously been behind the main; 0 when caught up",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
 	// Instance metrics
 	instanceHealthGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -212,6 +228,8 @@ func init() {
 		clusterRegisteredReplicasGauge,
 		replicationLagGauge,
 		replicationHealthyGauge,
+		replicaDataChannelUpGauge,
+		replicaBehindSecondsGauge,
 		instanceHealthGauge,
 		reconcileOperationsTotal,
 		reconcileDurationHistogram,
@@ -360,4 +378,25 @@ func (m *MetricsRecorder) DeleteClusterMetrics(cluster, namespace string) {
 	snapshotLastSuccessTimestamp.DeleteLabelValues(cluster, namespace)
 	validationLastRunTimestamp.DeleteLabelValues(cluster, namespace)
 	validationPassedGauge.DeleteLabelValues(cluster, namespace)
+}
+
+// RecordReplicaDataChannel sets the per-replica data-channel-up gauge.
+func (m *MetricsRecorder) RecordReplicaDataChannel(cluster, namespace, replica string, up bool) {
+	v := 0.0
+	if up {
+		v = 1.0
+	}
+	replicaDataChannelUpGauge.WithLabelValues(cluster, namespace, replica).Set(v)
+}
+
+// RecordReplicaBehindSeconds sets how long the replica has been behind, in seconds.
+// Pass 0 when the replica is caught up.
+func (m *MetricsRecorder) RecordReplicaBehindSeconds(cluster, namespace, replica string, seconds float64) {
+	replicaBehindSecondsGauge.WithLabelValues(cluster, namespace, replica).Set(seconds)
+}
+
+// DeleteReplicaMetrics removes per-replica gauge entries (called when a replica is unregistered).
+func (m *MetricsRecorder) DeleteReplicaMetrics(cluster, namespace, replica string) {
+	replicaDataChannelUpGauge.DeleteLabelValues(cluster, namespace, replica)
+	replicaBehindSecondsGauge.DeleteLabelValues(cluster, namespace, replica)
 }
