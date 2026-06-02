@@ -22,6 +22,7 @@ import (
 type ReplicationManager struct {
 	client   *memgraph.Client
 	recorder record.EventRecorder
+	metrics  *MetricsRecorder
 
 	// states tracks per-replica timers for classification. Keyed by
 	// "namespace/name" -> replica name -> state. Lost on operator restart.
@@ -40,6 +41,11 @@ func NewReplicationManager(client *memgraph.Client, recorder record.EventRecorde
 		states:   make(map[string]map[string]*replicaState),
 		now:      time.Now,
 	}
+}
+
+// SetMetricsRecorder wires the metrics recorder. Safe to call once at startup.
+func (rm *ReplicationManager) SetMetricsRecorder(m *MetricsRecorder) {
+	rm.metrics = m
 }
 
 // stateFor returns (creating if necessary) the per-replica state entry.
@@ -244,38 +250,98 @@ func (rm *ReplicationManager) cleanupStaleReplicas(ctx context.Context, cluster 
 	}
 }
 
-// CheckReplicationHealth checks if all replicas are healthy and in sync
-func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, writeInstance string, log *zap.Logger) (*memgraphv1alpha1.ReplicationHealth, error) {
+// CheckReplicationHealth classifies each registered replica, emits events,
+// updates per-replica metrics, and returns aggregate health counts.
+func (rm *ReplicationManager) CheckReplicationHealth(
+	ctx context.Context,
+	cluster *memgraphv1alpha1.MemgraphCluster,
+	writeInstance string,
+	log *zap.Logger,
+) (*memgraphv1alpha1.ReplicationHealth, error) {
 	if writeInstance == "" {
 		return nil, fmt.Errorf("no write instance specified")
 	}
 
-	// Get registered replicas
 	replicas, err := rm.client.ShowReplicas(ctx, cluster.Namespace, writeInstance)
 	if err != nil {
 		return nil, fmt.Errorf("failed to show replicas: %w", err)
 	}
+
+	behindThreshold := cluster.Spec.Replication.BehindAlertThreshold.Duration
+	if behindThreshold <= 0 {
+		behindThreshold = 5 * time.Minute // safety net if defaulting did not apply
+	}
+
+	now := rm.now()
+	clusterKey := cluster.Namespace + "/" + cluster.Name
 
 	health := &memgraphv1alpha1.ReplicationHealth{
 		TotalReplicas:   int32(len(replicas)),
 		HealthyReplicas: 0,
 	}
 
+	observed := make(map[string]struct{}, len(replicas))
+
+	rm.statesMu.Lock()
+	defer rm.statesMu.Unlock()
+
 	for _, replica := range replicas {
-		// Status can be "ready", "replicating", "recovery", "invalid"
-		status := strings.ToLower(replica.Status)
-		if status == "ready" || status == "replicating" {
+		observed[replica.Name] = struct{}{}
+		st := rm.stateFor(clusterKey, replica.Name)
+
+		class := classifyReplica(replica, st, now, behindThreshold)
+
+		if class.isHealthy() {
 			health.HealthyReplicas++
-		} else {
-			log.Warn("unhealthy replica detected",
+		}
+
+		// Metrics
+		if rm.metrics != nil {
+			channelUp := class != classificationDataChannelDown &&
+				class != classificationTransient &&
+				class != classificationInvalid &&
+				class != classificationUnknownStatus
+			rm.metrics.RecordReplicaDataChannel(cluster.Name, cluster.Namespace, replica.Name, channelUp)
+
+			behindSeconds := 0.0
+			if !st.behindSince.IsZero() {
+				behindSeconds = now.Sub(st.behindSince).Seconds()
+			}
+			rm.metrics.RecordReplicaBehindSeconds(cluster.Name, cluster.Namespace, replica.Name, behindSeconds)
+		}
+
+		// Events for unhealthy classifications only.
+		switch class {
+		case classificationDataChannelDown:
+			log.Warn("replica data channel down",
 				zap.String("replica", replica.Name),
-				zap.String("status", replica.Status))
-			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaUnhealthy,
-				fmt.Sprintf("Replica %s is unhealthy: %s", replica.Name, replica.Status))
+				zap.Duration("emptyFor", now.Sub(st.channelDownSince)))
+			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaDataChannelDown,
+				fmt.Sprintf("Replica %s registered but data_info is empty for %s — main has not opened a data channel. Check connectivity on :10000, replica role, and version match. Re-registering with a fresh PVC usually resolves this.",
+					replica.Name, now.Sub(st.channelDownSince).Round(time.Second)))
+		case classificationInvalid:
+			log.Warn("replica in invalid state",
+				zap.String("replica", replica.Name),
+				zap.Any("dataInfo", replica.DataInfo))
+			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaInvalid,
+				fmt.Sprintf("Replica %s reports invalid status. Manual intervention required (drop + re-register).", replica.Name))
+		case classificationBehindTooLong:
+			log.Warn("replica behind for too long",
+				zap.String("replica", replica.Name),
+				zap.Duration("behindFor", now.Sub(st.behindSince)),
+				zap.Duration("threshold", behindThreshold))
+			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaBehindTooLong,
+				fmt.Sprintf("Replica %s has been behind for %s (threshold %s).",
+					replica.Name, now.Sub(st.behindSince).Round(time.Second), behindThreshold))
+		case classificationUnknownStatus:
+			log.Warn("replica reports unknown status",
+				zap.String("replica", replica.Name),
+				zap.Any("dataInfo", replica.DataInfo))
 		}
 	}
 
-	// Emit event if all replicas are healthy
+	rm.pruneStates(clusterKey, observed)
+
 	if health.HealthyReplicas == health.TotalReplicas && health.TotalReplicas > 0 {
 		rm.recorder.Event(cluster, corev1.EventTypeNormal, EventReasonReplicationHealthy,
 			fmt.Sprintf("All %d replicas are healthy", health.TotalReplicas))

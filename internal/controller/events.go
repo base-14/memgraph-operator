@@ -20,7 +20,6 @@ const (
 	EventReasonReplicaUnregistered    = "ReplicaUnregistered"
 	EventReasonReplicationHealthy     = "ReplicationHealthy"
 	EventReasonReplicationError       = "ReplicationError"
-	EventReasonReplicaUnhealthy       = "ReplicaUnhealthy" // deprecated; removed once CheckReplicationHealth is rewritten
 	EventReasonReplicaDataChannelDown = "ReplicaDataChannelDown"
 	EventReasonReplicaInvalid         = "ReplicaInvalid"
 	EventReasonReplicaBehindTooLong   = "ReplicaBehindTooLong"

@@ -298,6 +298,7 @@ func (r *MemgraphClusterReconciler) ensureReplicationManager() error {
 	}
 
 	r.replicationManager = NewReplicationManager(mgClient, r.Recorder)
+	r.replicationManager.SetMetricsRecorder(r.metrics)
 	return nil
 }
 

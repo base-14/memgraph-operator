@@ -20,7 +20,6 @@ func TestEventReasonConstants(t *testing.T) {
 		{"EventReasonReplicaUnregistered", EventReasonReplicaUnregistered},
 		{"EventReasonReplicationHealthy", EventReasonReplicationHealthy},
 		{"EventReasonReplicationError", EventReasonReplicationError},
-		{"EventReasonReplicaUnhealthy", EventReasonReplicaUnhealthy},
 		{"EventReasonReplicaDataChannelDown", EventReasonReplicaDataChannelDown},
 		{"EventReasonReplicaInvalid", EventReasonReplicaInvalid},
 		{"EventReasonReplicaBehindTooLong", EventReasonReplicaBehindTooLong},
