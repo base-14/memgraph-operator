@@ -400,11 +400,23 @@ func applyMemoryUnit(num float64, unit string) int64 {
 	return int64(num)
 }
 
-// dataInfoEntryRe matches a per-database entry inside the `data_info` Cypher map literal.
-// Example input cell: {memgraph: {behind: -8, status: "recovery", ts: 27335187}}
-// The regex captures: 1=db name, 2=behind, 3=status, 4=ts. Field order inside the
-// inner map is fixed by Memgraph's SHOW REPLICAS output.
-var dataInfoEntryRe = regexp.MustCompile(`(\w+):\s*\{\s*behind:\s*(-?\d+),\s*status:\s*"(\w+)",\s*ts:\s*(\d+)\s*\}`)
+// dataInfoBlockRe matches a single per-database entry inside the `data_info` Cypher map literal,
+// capturing the database name and the raw inner-map content. Example outer cell:
+//
+//	{memgraph: {behind: -8, status: "recovery", ts: 27335187}}
+//
+// The capture groups are: 1=db name, 2=inner content (everything between the inner braces).
+var dataInfoBlockRe = regexp.MustCompile(`(\w+):\s*\{([^{}]*)\}`)
+
+// dataInfoBehindRe, dataInfoStatusRe, dataInfoTsRe extract individual fields from the inner
+// content of one database's entry. Keeping these independent makes the parser robust to
+// any future change in Memgraph's emitted field order (Cypher map literals have no
+// guaranteed key ordering).
+var (
+	dataInfoBehindRe = regexp.MustCompile(`\bbehind:\s*(-?\d+)`)
+	dataInfoStatusRe = regexp.MustCompile(`\bstatus:\s*"(\w+)"`)
+	dataInfoTsRe     = regexp.MustCompile(`\bts:\s*(\d+)`)
+)
 
 // parseShowReplicasCSV parses mgconsole's `--output-format csv` output for SHOW REPLICAS
 // against Memgraph 3.x. Columns: name, socket_address, sync_mode, system_info, data_info.
@@ -431,7 +443,7 @@ func parseShowReplicasCSV(output string) ([]ReplicaInfo, error) {
 			continue
 		}
 		// Skip the header row.
-		if i == 0 && row[0] == "name" {
+		if i == 0 && strings.ToLower(strings.TrimSpace(row[0])) == "name" {
 			continue
 		}
 
@@ -447,19 +459,27 @@ func parseShowReplicasCSV(output string) ([]ReplicaInfo, error) {
 			DataInfo: map[string]ReplicaDatabaseStatus{},
 		}
 
+		// Column 3 (system_info) intentionally ignored — system replication state is not used here.
 		dataInfoCell := strings.TrimSpace(row[4])
-		// dataInfoCell is either "{}" or "{db: {...}, db2: {...}}"; the regex
-		// extracts each inner entry. Non-matching cells produce an empty map.
-		for _, m := range dataInfoEntryRe.FindAllStringSubmatch(dataInfoCell, -1) {
+		// Iterate per-database blocks. Each block looks like `dbName: { ... }` and may
+		// contain `behind`, `status`, `ts` in any order — Cypher map literals have no
+		// guaranteed key ordering. Extract each field independently.
+		for _, m := range dataInfoBlockRe.FindAllStringSubmatch(dataInfoCell, -1) {
 			db := m[1]
-			behind, _ := strconv.ParseInt(m[2], 10, 64)
-			status := m[3]
-			ts, _ := strconv.ParseInt(m[4], 10, 64)
-			info.DataInfo[db] = ReplicaDatabaseStatus{
-				Status: status,
-				Behind: behind,
-				Ts:     ts,
+			inner := m[2]
+
+			var entry ReplicaDatabaseStatus
+			if bm := dataInfoBehindRe.FindStringSubmatch(inner); len(bm) == 2 {
+				entry.Behind, _ = strconv.ParseInt(bm[1], 10, 64)
 			}
+			if sm := dataInfoStatusRe.FindStringSubmatch(inner); len(sm) == 2 {
+				entry.Status = sm[1]
+			}
+			if tm := dataInfoTsRe.FindStringSubmatch(inner); len(tm) == 2 {
+				entry.Ts, _ = strconv.ParseInt(tm[1], 10, 64)
+			}
+
+			info.DataInfo[db] = entry
 		}
 
 		// Derive transitional Status field from the default "memgraph" database.

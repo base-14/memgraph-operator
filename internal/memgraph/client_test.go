@@ -395,6 +395,23 @@ func TestParseShowReplicasCSV(t *testing.T) {
 			},
 		},
 		{
+			name: "non-canonical field order in data_info (status first)",
+			output: `"name","socket_address","sync_mode","system_info","data_info"
+"replica_x","host-x.svc:10000","async","null","{memgraph: {status: ""ready"", ts: 42, behind: 0}}"
+`,
+			want: []ReplicaInfo{
+				{
+					Name: "replica_x",
+					Host: "host-x.svc:10000",
+					Mode: "async",
+					DataInfo: map[string]ReplicaDatabaseStatus{
+						"memgraph": {Status: "ready", Behind: 0, Ts: 42},
+					},
+					Status: "ready",
+				},
+			},
+		},
+		{
 			name: "multiple replicas mixed states",
 			output: `"name","socket_address","sync_mode","system_info","data_info"
 "replica_0","host-0.svc:10000","async","null","{}"
