@@ -1034,6 +1034,12 @@ spec:
               replication:
                 description: Replication defines the replication settings
                 properties:
+                  behindAlertThreshold:
+                    default: 5m
+                    description: |-
+                      BehindAlertThreshold is the duration a replica may stay behind the main
+                      before being reported as unhealthy. Defaults to 5m. Must be greater than 0.
+                    type: string
                   mode:
                     default: ASYNC
                     description: Mode is the replication mode (ASYNC, SYNC, STRICT_SYNC)

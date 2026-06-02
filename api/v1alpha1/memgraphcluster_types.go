@@ -140,6 +140,12 @@ type ReplicationSpec struct {
 	// +kubebuilder:default="ASYNC"
 	// +optional
 	Mode ReplicationMode `json:"mode,omitempty"`
+
+	// BehindAlertThreshold is the duration a replica may stay behind the main
+	// before being reported as unhealthy. Defaults to 5m. Must be greater than 0.
+	// +kubebuilder:default="5m"
+	// +optional
+	BehindAlertThreshold metav1.Duration `json:"behindAlertThreshold,omitempty"`
 }
 
 // HighAvailabilitySpec defines automatic promotion/failover settings
