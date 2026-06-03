@@ -144,6 +144,7 @@ type ReplicationSpec struct {
 	// BehindAlertThreshold is the duration a replica may stay behind the main
 	// before being reported as unhealthy. Defaults to 5m. Must be greater than 0.
 	// +kubebuilder:default="5m"
+	// +kubebuilder:validation:XValidation:rule=`!self.startsWith("-") && self != "0s"`,message="behindAlertThreshold must be a positive Go duration (e.g. '5m', '30s'); zero and negative values are not allowed"
 	// +optional
 	BehindAlertThreshold metav1.Duration `json:"behindAlertThreshold,omitempty"`
 }

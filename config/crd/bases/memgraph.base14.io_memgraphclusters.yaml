@@ -1040,6 +1040,10 @@ spec:
                       BehindAlertThreshold is the duration a replica may stay behind the main
                       before being reported as unhealthy. Defaults to 5m. Must be greater than 0.
                     type: string
+                    x-kubernetes-validations:
+                    - message: behindAlertThreshold must be a positive Go duration
+                        (e.g. '5m', '30s'); zero and negative values are not allowed
+                      rule: '!self.startsWith("-") && self != "0s"'
                   mode:
                     default: ASYNC
                     description: Mode is the replication mode (ASYNC, SYNC, STRICT_SYNC)

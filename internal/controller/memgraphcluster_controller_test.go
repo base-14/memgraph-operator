@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,7 +37,11 @@ var _ = Describe("MemgraphCluster Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: memgraphv1alpha1.MemgraphClusterSpec{
+						Replication: memgraphv1alpha1.ReplicationSpec{
+							BehindAlertThreshold: metav1.Duration{Duration: 5 * time.Minute},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
