@@ -66,6 +66,9 @@ func classifyReplica(replica memgraph.ReplicaInfo, state *replicaState, now time
 		if state.channelDownSince.IsZero() {
 			state.channelDownSince = now
 		}
+		// Channel is down → lag is undefined; clear the behind timer so the
+		// memgraph_replica_behind_seconds gauge does not keep growing.
+		state.behindSince = time.Time{}
 		if now.Sub(state.channelDownSince) > channelDownGracePeriod {
 			return classificationDataChannelDown
 		}

@@ -185,6 +185,17 @@ func TestClassifyReplica(t *testing.T) {
 			wantState: replicaState{},
 		},
 		{
+			name: "channel-down clears behindSince",
+			replica: memgraph.ReplicaInfo{
+				Name:     "r0",
+				DataInfo: map[string]memgraph.ReplicaDatabaseStatus{},
+			},
+			state:     &replicaState{behindSince: baseTime},
+			now:       baseTime.Add(10 * time.Second),
+			want:      classificationTransient,
+			wantState: replicaState{channelDownSince: baseTime.Add(10 * time.Second)},
+		},
+		{
 			name: "negative behind ignored (not Behind)",
 			replica: memgraph.ReplicaInfo{
 				Name: "r0",
