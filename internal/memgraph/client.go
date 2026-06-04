@@ -5,7 +5,9 @@ package memgraph
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -106,13 +108,49 @@ func (c *Client) UnregisterReplica(ctx context.Context, namespace, mainPodName, 
 	return nil
 }
 
+// Replica status values derived from SHOW REPLICAS data_info.
+// "invalid" is also used when data_info is empty ({}), which means the main
+// has no confirmed replication state for the replica — data streaming never
+// engaged even though the registration exists.
+const (
+	ReplicaStatusReady       = "ready"
+	ReplicaStatusReplicating = "replicating"
+	ReplicaStatusRecovery    = "recovery"
+	ReplicaStatusInvalid     = "invalid"
+)
+
+// ReplicaDBInfo is the per-database replication state from data_info,
+// e.g. {memgraph: {behind: 0, status: "ready", ts: 2}}
+type ReplicaDBInfo struct {
+	Behind    int64  `json:"behind"`
+	Status    string `json:"status"`
+	Timestamp int64  `json:"ts"`
+}
+
 // ReplicaInfo contains information about a registered replica
 type ReplicaInfo struct {
-	Name   string
-	Host   string
-	Port   int
-	Mode   string
-	Status string
+	Name          string
+	SocketAddress string // "host:port" as reported by SHOW REPLICAS
+	Host          string
+	Port          int
+	SyncMode      string
+	DataInfo      map[string]ReplicaDBInfo // parsed data_info, nil when empty/Null
+	Behind        int64                    // worst behind across databases
+	Status        string                   // derived: ready|replicating|recovery|invalid
+	Timestamp     int64                    // latest confirmed replication timestamp
+}
+
+// IsHealthy reports whether the replica is actively streaming data.
+// A registered replica with empty data_info is NOT healthy — registration
+// and heartbeat can be alive while no data is replicated.
+func (r ReplicaInfo) IsHealthy() bool {
+	return r.Status == ReplicaStatusReady || r.Status == ReplicaStatusReplicating
+}
+
+// DataInfoPresent reports whether the main has confirmed replication state
+// for this replica. False means data streaming never engaged.
+func (r ReplicaInfo) DataInfoPresent() bool {
+	return len(r.DataInfo) > 0
 }
 
 // StorageInfo contains storage statistics from SHOW STORAGE INFO
@@ -379,38 +417,141 @@ func applyMemoryUnit(num float64, unit string) int64 {
 	return int64(num)
 }
 
-// parseShowReplicasOutput parses the output of SHOW REPLICAS command
+// parseShowReplicasOutput parses the output of SHOW REPLICAS command.
+//
+// Current Memgraph (v2.21+/v3.x) format:
+//
+//	| name | socket_address | sync_mode | system_info | data_info |
+//	| "r0" | "host:10000"   | "async"   | Null        | {memgraph: {behind: 0, status: "ready", ts: 2}} |
+//
+// Legacy format (pre-v2.21):
+//
+//	| name | host | port | mode | status |
+//
+// The two are distinguished per row: the legacy format has a numeric port in
+// the third column where the current format has a sync_mode string.
 func parseShowReplicasOutput(output string) []ReplicaInfo {
-	var replicas []ReplicaInfo
-
 	lines := strings.Split(output, "\n")
+	replicas := make([]ReplicaInfo, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "+") || strings.HasPrefix(line, "|") && strings.Contains(line, "name") {
+		if line == "" || strings.HasPrefix(line, "+") || !strings.HasPrefix(line, "|") {
 			continue
 		}
 
-		// Parse table row: | name | host | port | mode | status |
-		if strings.HasPrefix(line, "|") {
-			parts := strings.Split(line, "|")
-			if len(parts) >= 6 {
-				// Strip surrounding quotes from replica name if present
-				// Memgraph returns names like "replica_name" but DROP REPLICA expects unquoted names
-				name := strings.TrimSpace(parts[1])
-				name = strings.Trim(name, "\"")
-
-				replica := ReplicaInfo{
-					Name:   name,
-					Host:   strings.TrimSpace(parts[2]),
-					Mode:   strings.TrimSpace(parts[4]),
-					Status: strings.TrimSpace(parts[5]),
-				}
-				if replica.Name != "" && replica.Name != "name" {
-					replicas = append(replicas, replica)
-				}
-			}
+		parts := strings.Split(line, "|")
+		if len(parts) < 7 {
+			continue
 		}
+
+		cols := make([]string, 0, len(parts)-2)
+		for _, p := range parts[1 : len(parts)-1] {
+			cols = append(cols, strings.TrimSpace(p))
+		}
+
+		// Strip surrounding quotes from replica name if present
+		// Memgraph returns names like "replica_name" but DROP REPLICA expects unquoted names
+		name := strings.Trim(cols[0], "\"")
+		if name == "" || name == "name" {
+			continue
+		}
+
+		// Legacy format detection: numeric port in the third column
+		if port, err := strconv.Atoi(strings.Trim(cols[2], "\"")); err == nil {
+			replicas = append(replicas, ReplicaInfo{
+				Name:     name,
+				Host:     strings.Trim(cols[1], "\""),
+				Port:     port,
+				SyncMode: strings.Trim(cols[3], "\""),
+				Status:   strings.Trim(cols[4], "\""),
+			})
+			continue
+		}
+
+		replica := ReplicaInfo{
+			Name:          name,
+			SocketAddress: strings.Trim(cols[1], "\""),
+			SyncMode:      strings.Trim(cols[2], "\""),
+			DataInfo:      parseDataInfo(cols[4]),
+		}
+		if host, portStr, found := strings.Cut(replica.SocketAddress, ":"); found {
+			replica.Host = host
+			replica.Port, _ = strconv.Atoi(portStr)
+		} else {
+			replica.Host = replica.SocketAddress
+		}
+		replica.Behind, replica.Status, replica.Timestamp = summarizeDataInfo(replica.DataInfo)
+
+		replicas = append(replicas, replica)
 	}
 
 	return replicas
+}
+
+// bareKeyPattern matches unquoted keys in Memgraph's map literal output,
+// e.g. {memgraph: {behind: 0, status: "ready", ts: 2}}
+var bareKeyPattern = regexp.MustCompile(`([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*:`)
+
+// parseDataInfo parses the data_info column of SHOW REPLICAS.
+// Returns nil for empty ({}), Null, or unparseable input — all of which mean
+// the main has no confirmed replication state for the replica.
+func parseDataInfo(raw string) map[string]ReplicaDBInfo {
+	raw = strings.Trim(strings.TrimSpace(raw), "\"")
+	if raw == "" || raw == "{}" || strings.EqualFold(raw, "null") {
+		return nil
+	}
+
+	// Quote bare keys so the map literal becomes valid JSON
+	normalized := bareKeyPattern.ReplaceAllString(raw, `$1"$2":`)
+
+	var dataInfo map[string]ReplicaDBInfo
+	if err := json.Unmarshal([]byte(normalized), &dataInfo); err != nil {
+		return nil
+	}
+	if len(dataInfo) == 0 {
+		return nil
+	}
+
+	return dataInfo
+}
+
+// summarizeDataInfo derives replica-level Behind/Status/Timestamp from the
+// per-database data_info map. Empty data_info means replication never
+// engaged, which is reported as "invalid".
+func summarizeDataInfo(dataInfo map[string]ReplicaDBInfo) (behind int64, status string, timestamp int64) {
+	if len(dataInfo) == 0 {
+		return 0, ReplicaStatusInvalid, 0
+	}
+
+	// Worst-status-wins ordering; unknown statuses rank as invalid
+	statusRank := map[string]int{
+		ReplicaStatusReady:       0,
+		ReplicaStatusReplicating: 1,
+		ReplicaStatusRecovery:    2,
+		ReplicaStatusInvalid:     3,
+	}
+
+	first := true
+	status = ReplicaStatusReady
+	for _, db := range dataInfo {
+		if first || db.Behind > behind {
+			behind = db.Behind
+		}
+		first = false
+
+		if db.Timestamp > timestamp {
+			timestamp = db.Timestamp
+		}
+
+		dbStatus := strings.ToLower(strings.Trim(db.Status, "\""))
+		rank, known := statusRank[dbStatus]
+		if !known {
+			dbStatus, rank = ReplicaStatusInvalid, statusRank[ReplicaStatusInvalid]
+		}
+		if rank > statusRank[status] {
+			status = dbStatus
+		}
+	}
+
+	return behind, status, timestamp
 }
