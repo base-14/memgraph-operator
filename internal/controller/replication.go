@@ -202,16 +202,20 @@ func (rm *ReplicationManager) cleanupStaleReplicas(ctx context.Context, cluster 
 	}
 }
 
-// CheckReplicationHealth checks if all replicas are healthy and in sync
-func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, writeInstance string, log *zap.Logger) (*memgraphv1alpha1.ReplicationHealth, error) {
+// CheckReplicationHealth checks if all replicas are healthy and in sync.
+// Health means data is actually streaming (status ready/replicating from
+// parsed data_info) — a registered replica with empty data_info is unhealthy.
+// The parsed replicas are returned so callers can record per-replica metrics
+// without a second SHOW REPLICAS round-trip.
+func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, writeInstance string, log *zap.Logger) (*memgraphv1alpha1.ReplicationHealth, []memgraph.ReplicaInfo, error) {
 	if writeInstance == "" {
-		return nil, fmt.Errorf("no write instance specified")
+		return nil, nil, fmt.Errorf("no write instance specified")
 	}
 
 	// Get registered replicas
 	replicas, err := rm.client.ShowReplicas(ctx, cluster.Namespace, writeInstance)
 	if err != nil {
-		return nil, fmt.Errorf("failed to show replicas: %w", err)
+		return nil, nil, fmt.Errorf("failed to show replicas: %w", err)
 	}
 
 	health := &memgraphv1alpha1.ReplicationHealth{
@@ -220,14 +224,14 @@ func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluste
 	}
 
 	for _, replica := range replicas {
-		// Status can be "ready", "replicating", "recovery", "invalid"
-		status := strings.ToLower(replica.Status)
-		if status == "ready" || status == "replicating" {
+		if replica.IsHealthy() {
 			health.HealthyReplicas++
 		} else {
 			log.Warn("unhealthy replica detected",
 				zap.String("replica", replica.Name),
-				zap.String("status", replica.Status))
+				zap.String("status", replica.Status),
+				zap.Bool("dataInfoPresent", replica.DataInfoPresent()),
+				zap.Int64("behind", replica.Behind))
 			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaUnhealthy,
 				fmt.Sprintf("Replica %s is unhealthy: %s", replica.Name, replica.Status))
 		}
@@ -239,7 +243,7 @@ func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluste
 			fmt.Sprintf("All %d replicas are healthy", health.TotalReplicas))
 	}
 
-	return health, nil
+	return health, replicas, nil
 }
 
 // HandleMainFailover handles failover when the main instance becomes unavailable

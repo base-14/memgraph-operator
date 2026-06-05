@@ -59,6 +59,84 @@ var (
 		[]string{"cluster", "namespace"},
 	)
 
+	// Per-replica replication metrics (from SHOW REPLICAS data_info).
+	// These distinguish "registered" from "actually streaming data": a replica
+	// can be registered and heartbeating while replicating nothing (empty
+	// data_info), which is invisible to registration-count based metrics.
+	replicaHealthyGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_healthy",
+			Help: "Whether the replica is streaming data (1 = status ready/replicating, 0 = recovery/invalid)",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
+	replicaStatusGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_status",
+			Help: "Current replication status of the replica (1 for the active status label: ready, replicating, recovery, invalid)",
+		},
+		[]string{"cluster", "namespace", "replica", "status"},
+	)
+
+	replicaBehindGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_behind_count",
+			Help: "Number of transactions the replica is behind the main (from SHOW REPLICAS data_info)",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
+	replicaLastConfirmedTimestampGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_last_confirmed_timestamp_seconds",
+			Help: "Last confirmed replication timestamp for the replica (0 = data streaming never engaged)",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
+	replicaDataInfoPresentGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_data_info_present",
+			Help: "Whether the main has confirmed replication state for the replica (0 = data_info empty, streaming never engaged)",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
+	clusterReplicasTotalGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_cluster_replicas_total",
+			Help: "Number of replicas registered with the main instance",
+		},
+		[]string{"cluster", "namespace"},
+	)
+
+	clusterReplicasHealthyTotalGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_cluster_replicas_healthy_total",
+			Help: "Number of registered replicas that are actively streaming data (alert when < memgraph_cluster_replicas_total)",
+		},
+		[]string{"cluster", "namespace"},
+	)
+
+	// Data drift metrics: explicit main-minus-replica counts so a silently
+	// empty or stale replica is directly observable.
+	replicationVertexDriftGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replication_vertex_drift",
+			Help: "Vertex count difference between main and the replica (main minus replica; non-zero indicates drift)",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
+	replicationEdgeDriftGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replication_edge_drift",
+			Help: "Edge count difference between main and the replica (main minus replica; non-zero indicates drift)",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
 	// Instance metrics
 	instanceHealthGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -212,6 +290,15 @@ func init() {
 		clusterRegisteredReplicasGauge,
 		replicationLagGauge,
 		replicationHealthyGauge,
+		replicaHealthyGauge,
+		replicaStatusGauge,
+		replicaBehindGauge,
+		replicaLastConfirmedTimestampGauge,
+		replicaDataInfoPresentGauge,
+		clusterReplicasTotalGauge,
+		clusterReplicasHealthyTotalGauge,
+		replicationVertexDriftGauge,
+		replicationEdgeDriftGauge,
 		instanceHealthGauge,
 		reconcileOperationsTotal,
 		reconcileDurationHistogram,
@@ -264,14 +351,82 @@ func (m *MetricsRecorder) RecordClusterInstances(cluster, namespace string, read
 	clusterRegisteredReplicasGauge.WithLabelValues(cluster, namespace).Set(float64(registered))
 }
 
-// RecordReplicationHealth records replication health metrics
-func (m *MetricsRecorder) RecordReplicationHealth(cluster, namespace string, lagMs int64, healthy bool) {
+// RecordReplicationLag records the measured replication lag.
+// Note: memgraph_replication_healthy is owned by RecordReplicaSet (streaming
+// health from SHOW REPLICAS data_info), not by the validation lag test.
+func (m *MetricsRecorder) RecordReplicationLag(cluster, namespace string, lagMs int64) {
 	replicationLagGauge.WithLabelValues(cluster, namespace).Set(float64(lagMs))
-	healthyValue := 0.0
-	if healthy {
-		healthyValue = 1.0
+}
+
+// knownReplicaStatuses is the one-hot label set for memgraph_replica_status
+var knownReplicaStatuses = []string{
+	memgraph.ReplicaStatusReady,
+	memgraph.ReplicaStatusReplicating,
+	memgraph.ReplicaStatusRecovery,
+	memgraph.ReplicaStatusInvalid,
+}
+
+// RecordReplicaSet records per-replica streaming health and cluster rollups
+// from a full SHOW REPLICAS result. Series for replicas that no longer exist
+// are removed first, so stale replicas disappear from the scrape.
+func (m *MetricsRecorder) RecordReplicaSet(cluster, namespace string, replicas []memgraph.ReplicaInfo) {
+	partial := prometheus.Labels{"cluster": cluster, "namespace": namespace}
+	replicaHealthyGauge.DeletePartialMatch(partial)
+	replicaStatusGauge.DeletePartialMatch(partial)
+	replicaBehindGauge.DeletePartialMatch(partial)
+	replicaLastConfirmedTimestampGauge.DeletePartialMatch(partial)
+	replicaDataInfoPresentGauge.DeletePartialMatch(partial)
+
+	var healthyCount int
+	for _, replica := range replicas {
+		healthyValue := 0.0
+		if replica.IsHealthy() {
+			healthyValue = 1.0
+			healthyCount++
+		}
+		replicaHealthyGauge.WithLabelValues(cluster, namespace, replica.Name).Set(healthyValue)
+
+		for _, status := range knownReplicaStatuses {
+			statusValue := 0.0
+			if status == replica.Status {
+				statusValue = 1.0
+			}
+			replicaStatusGauge.WithLabelValues(cluster, namespace, replica.Name, status).Set(statusValue)
+		}
+
+		replicaBehindGauge.WithLabelValues(cluster, namespace, replica.Name).Set(float64(replica.Behind))
+		replicaLastConfirmedTimestampGauge.WithLabelValues(cluster, namespace, replica.Name).Set(float64(replica.Timestamp))
+
+		dataInfoValue := 0.0
+		if replica.DataInfoPresent() {
+			dataInfoValue = 1.0
+		}
+		replicaDataInfoPresentGauge.WithLabelValues(cluster, namespace, replica.Name).Set(dataInfoValue)
 	}
-	replicationHealthyGauge.WithLabelValues(cluster, namespace).Set(healthyValue)
+
+	clusterReplicasTotalGauge.WithLabelValues(cluster, namespace).Set(float64(len(replicas)))
+	clusterReplicasHealthyTotalGauge.WithLabelValues(cluster, namespace).Set(float64(healthyCount))
+
+	// Cluster-level replication health: every registered replica is streaming
+	allHealthy := 0.0
+	if healthyCount == len(replicas) {
+		allHealthy = 1.0
+	}
+	replicationHealthyGauge.WithLabelValues(cluster, namespace).Set(allHealthy)
+}
+
+// RecordReplicationDrift records the data drift between main and a replica
+func (m *MetricsRecorder) RecordReplicationDrift(cluster, namespace, replica string, vertexDrift, edgeDrift int64) {
+	replicationVertexDriftGauge.WithLabelValues(cluster, namespace, replica).Set(float64(vertexDrift))
+	replicationEdgeDriftGauge.WithLabelValues(cluster, namespace, replica).Set(float64(edgeDrift))
+}
+
+// DeleteReplicationDriftMetrics removes all drift series for a cluster so
+// stale replicas do not keep reporting old drift values
+func (m *MetricsRecorder) DeleteReplicationDriftMetrics(cluster, namespace string) {
+	partial := prometheus.Labels{"cluster": cluster, "namespace": namespace}
+	replicationVertexDriftGauge.DeletePartialMatch(partial)
+	replicationEdgeDriftGauge.DeletePartialMatch(partial)
 }
 
 // RecordInstanceHealth records instance health metrics
@@ -357,7 +512,20 @@ func (m *MetricsRecorder) DeleteClusterMetrics(cluster, namespace string) {
 	clusterRegisteredReplicasGauge.DeleteLabelValues(cluster, namespace)
 	replicationLagGauge.DeleteLabelValues(cluster, namespace)
 	replicationHealthyGauge.DeleteLabelValues(cluster, namespace)
+	clusterReplicasTotalGauge.DeleteLabelValues(cluster, namespace)
+	clusterReplicasHealthyTotalGauge.DeleteLabelValues(cluster, namespace)
 	snapshotLastSuccessTimestamp.DeleteLabelValues(cluster, namespace)
 	validationLastRunTimestamp.DeleteLabelValues(cluster, namespace)
 	validationPassedGauge.DeleteLabelValues(cluster, namespace)
+
+	// Sweep all per-replica and per-instance series for the cluster
+	partial := prometheus.Labels{"cluster": cluster, "namespace": namespace}
+	replicaHealthyGauge.DeletePartialMatch(partial)
+	replicaStatusGauge.DeletePartialMatch(partial)
+	replicaBehindGauge.DeletePartialMatch(partial)
+	replicaLastConfirmedTimestampGauge.DeletePartialMatch(partial)
+	replicaDataInfoPresentGauge.DeletePartialMatch(partial)
+	replicationVertexDriftGauge.DeletePartialMatch(partial)
+	replicationEdgeDriftGauge.DeletePartialMatch(partial)
+	instanceHealthGauge.DeletePartialMatch(partial)
 }

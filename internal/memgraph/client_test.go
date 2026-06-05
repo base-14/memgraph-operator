@@ -320,12 +320,12 @@ func TestParseShowReplicasOutput(t *testing.T) {
 			expected: nil,
 		},
 		{
-			name:     "Header only",
+			name:     "Header only (legacy)",
 			output:   "+------+------+------+------+--------+\n| name | host | port | mode | status |\n+------+------+------+------+--------+\n",
 			expected: nil,
 		},
 		{
-			name: "Single replica",
+			name: "Legacy format single replica",
 			output: `+------------------+----------------------------------------+-------+-------+-------------+
 | name             | host                                   | port  | mode  | status      |
 +------------------+----------------------------------------+-------+-------+-------------+
@@ -333,15 +333,16 @@ func TestParseShowReplicasOutput(t *testing.T) {
 +------------------+----------------------------------------+-------+-------+-------------+`,
 			expected: []ReplicaInfo{
 				{
-					Name:   "cluster_replica1",
-					Host:   "cluster-1.cluster-headless.default.svc",
-					Mode:   "ASYNC",
-					Status: "ready",
+					Name:     "cluster_replica1",
+					Host:     "cluster-1.cluster-headless.default.svc",
+					Port:     10000,
+					SyncMode: "ASYNC",
+					Status:   "ready",
 				},
 			},
 		},
 		{
-			name: "Multiple replicas",
+			name: "Legacy format multiple replicas",
 			output: `+------------------+----------------------------------------+-------+-------+-------------+
 | name             | host                                   | port  | mode  | status      |
 +------------------+----------------------------------------+-------+-------+-------------+
@@ -350,16 +351,98 @@ func TestParseShowReplicasOutput(t *testing.T) {
 | cluster_2        | cluster-2.cluster-headless.default.svc | 10000 | ASYNC | recovery    |
 +------------------+----------------------------------------+-------+-------+-------------+`,
 			expected: []ReplicaInfo{
-				{Name: "cluster_0", Host: "cluster-0.cluster-headless.default.svc", Mode: "ASYNC", Status: "ready"},
-				{Name: "cluster_1", Host: "cluster-1.cluster-headless.default.svc", Mode: "SYNC", Status: "replicating"},
-				{Name: "cluster_2", Host: "cluster-2.cluster-headless.default.svc", Mode: "ASYNC", Status: "recovery"},
+				{Name: "cluster_0", Host: "cluster-0.cluster-headless.default.svc", Port: 10000, SyncMode: "ASYNC", Status: "ready"},
+				{Name: "cluster_1", Host: "cluster-1.cluster-headless.default.svc", Port: 10000, SyncMode: "SYNC", Status: "replicating"},
+				{Name: "cluster_2", Host: "cluster-2.cluster-headless.default.svc", Port: 10000, SyncMode: "ASYNC", Status: "recovery"},
 			},
 		},
 		{
-			name:   "With whitespace around values",
-			output: `| replica_x  |   host.example.com   | 10000 | ASYNC | ready |`,
+			name: "Current format healthy replica",
+			output: `+-------------+------------------+-----------+-------------+--------------------------------------------------+
+| name        | socket_address   | sync_mode | system_info | data_info                                        |
++-------------+------------------+-----------+-------------+--------------------------------------------------+
+| "replica_1" | "host-1.svc:10000" | "async" | Null        | {memgraph: {behind: 0, status: "ready", ts: 42}} |
++-------------+------------------+-----------+-------------+--------------------------------------------------+`,
 			expected: []ReplicaInfo{
-				{Name: "replica_x", Host: "host.example.com", Mode: "ASYNC", Status: "ready"},
+				{
+					Name:          "replica_1",
+					SocketAddress: "host-1.svc:10000",
+					Host:          "host-1.svc",
+					Port:          10000,
+					SyncMode:      "async",
+					Status:        ReplicaStatusReady,
+					Behind:        0,
+					Timestamp:     42,
+					DataInfo:      map[string]ReplicaDBInfo{"memgraph": {Behind: 0, Status: "ready", Timestamp: 42}},
+				},
+			},
+		},
+		{
+			name:   "Current format empty data_info means invalid (desynced replica shape)",
+			output: `| "my_cluster_graph_0" | "my-cluster-graph-0.my-cluster-graph-hl.tenant-ns.svc.cluster.local:10000" | "async" | Null | {} |`,
+			expected: []ReplicaInfo{
+				{
+					Name:          "my_cluster_graph_0",
+					SocketAddress: "my-cluster-graph-0.my-cluster-graph-hl.tenant-ns.svc.cluster.local:10000",
+					Host:          "my-cluster-graph-0.my-cluster-graph-hl.tenant-ns.svc.cluster.local",
+					Port:          10000,
+					SyncMode:      "async",
+					Status:        ReplicaStatusInvalid,
+					Behind:        0,
+					Timestamp:     0,
+					DataInfo:      nil,
+				},
+			},
+		},
+		{
+			name:   "Current format Null data_info means invalid",
+			output: `| "replica_1" | "host-1.svc:10000" | "sync" | Null | Null |`,
+			expected: []ReplicaInfo{
+				{
+					Name:          "replica_1",
+					SocketAddress: "host-1.svc:10000",
+					Host:          "host-1.svc",
+					Port:          10000,
+					SyncMode:      "sync",
+					Status:        ReplicaStatusInvalid,
+				},
+			},
+		},
+		{
+			name:   "Current format invalid replica with negative behind",
+			output: `| "replica_0" | "host-0.svc:10000" | "sync" | Null | {memgraph: {behind: -14984497, status: "invalid", ts: 0}} |`,
+			expected: []ReplicaInfo{
+				{
+					Name:          "replica_0",
+					SocketAddress: "host-0.svc:10000",
+					Host:          "host-0.svc",
+					Port:          10000,
+					SyncMode:      "sync",
+					Status:        ReplicaStatusInvalid,
+					Behind:        -14984497,
+					Timestamp:     0,
+					DataInfo:      map[string]ReplicaDBInfo{"memgraph": {Behind: -14984497, Status: "invalid", Timestamp: 0}},
+				},
+			},
+		},
+		{
+			name:   "Current format multi-database worst status wins",
+			output: `| "replica_1" | "host-1.svc:10000" | "async" | Null | {memgraph: {behind: 0, status: "ready", ts: 42}, otherdb: {behind: 5, status: "recovery", ts: 10}} |`,
+			expected: []ReplicaInfo{
+				{
+					Name:          "replica_1",
+					SocketAddress: "host-1.svc:10000",
+					Host:          "host-1.svc",
+					Port:          10000,
+					SyncMode:      "async",
+					Status:        ReplicaStatusRecovery,
+					Behind:        5,
+					Timestamp:     42,
+					DataInfo: map[string]ReplicaDBInfo{
+						"memgraph": {Behind: 0, Status: "ready", Timestamp: 42},
+						"otherdb":  {Behind: 5, Status: "recovery", Timestamp: 10},
+					},
+				},
 			},
 		},
 		{
@@ -384,22 +467,110 @@ func TestParseShowReplicasOutput(t *testing.T) {
 			result := parseShowReplicasOutput(tt.output)
 
 			if len(result) != len(tt.expected) {
-				t.Errorf("expected %d replicas, got %d", len(tt.expected), len(result))
-				return
+				t.Fatalf("expected %d replicas, got %d (%+v)", len(tt.expected), len(result), result)
 			}
 
 			for i, expected := range tt.expected {
-				if result[i].Name != expected.Name {
-					t.Errorf("replica[%d].Name = %s, want %s", i, result[i].Name, expected.Name)
+				got := result[i]
+				if got.Name != expected.Name {
+					t.Errorf("replica[%d].Name = %s, want %s", i, got.Name, expected.Name)
 				}
-				if result[i].Host != expected.Host {
-					t.Errorf("replica[%d].Host = %s, want %s", i, result[i].Host, expected.Host)
+				if got.Host != expected.Host {
+					t.Errorf("replica[%d].Host = %s, want %s", i, got.Host, expected.Host)
 				}
-				if result[i].Mode != expected.Mode {
-					t.Errorf("replica[%d].Mode = %s, want %s", i, result[i].Mode, expected.Mode)
+				if got.Port != expected.Port {
+					t.Errorf("replica[%d].Port = %d, want %d", i, got.Port, expected.Port)
 				}
-				if result[i].Status != expected.Status {
-					t.Errorf("replica[%d].Status = %s, want %s", i, result[i].Status, expected.Status)
+				if got.SyncMode != expected.SyncMode {
+					t.Errorf("replica[%d].SyncMode = %s, want %s", i, got.SyncMode, expected.SyncMode)
+				}
+				if got.Status != expected.Status {
+					t.Errorf("replica[%d].Status = %s, want %s", i, got.Status, expected.Status)
+				}
+				if got.Behind != expected.Behind {
+					t.Errorf("replica[%d].Behind = %d, want %d", i, got.Behind, expected.Behind)
+				}
+				if got.Timestamp != expected.Timestamp {
+					t.Errorf("replica[%d].Timestamp = %d, want %d", i, got.Timestamp, expected.Timestamp)
+				}
+				if len(got.DataInfo) != len(expected.DataInfo) {
+					t.Errorf("replica[%d].DataInfo has %d entries, want %d", i, len(got.DataInfo), len(expected.DataInfo))
+				}
+				for db, expectedDB := range expected.DataInfo {
+					if got.DataInfo[db] != expectedDB {
+						t.Errorf("replica[%d].DataInfo[%s] = %+v, want %+v", i, db, got.DataInfo[db], expectedDB)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestReplicaInfoIsHealthy(t *testing.T) {
+	tests := []struct {
+		status  string
+		healthy bool
+	}{
+		{ReplicaStatusReady, true},
+		{ReplicaStatusReplicating, true},
+		{ReplicaStatusRecovery, false},
+		{ReplicaStatusInvalid, false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			r := ReplicaInfo{Status: tt.status}
+			if r.IsHealthy() != tt.healthy {
+				t.Errorf("IsHealthy() with status %q = %v, want %v", tt.status, r.IsHealthy(), tt.healthy)
+			}
+		})
+	}
+}
+
+func TestReplicaInfoDataInfoPresent(t *testing.T) {
+	withData := ReplicaInfo{DataInfo: map[string]ReplicaDBInfo{"memgraph": {Status: "ready"}}}
+	if !withData.DataInfoPresent() {
+		t.Error("DataInfoPresent() = false for non-empty DataInfo, want true")
+	}
+
+	empty := ReplicaInfo{}
+	if empty.DataInfoPresent() {
+		t.Error("DataInfoPresent() = true for nil DataInfo, want false")
+	}
+}
+
+func TestParseDataInfo(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected map[string]ReplicaDBInfo
+	}{
+		{"Empty braces", "{}", nil},
+		{"Null", "Null", nil},
+		{"Empty string", "", nil},
+		{"Garbage", "not a map", nil},
+		{
+			name:     "Single database",
+			input:    `{memgraph: {behind: 0, status: "ready", ts: 2}}`,
+			expected: map[string]ReplicaDBInfo{"memgraph": {Behind: 0, Status: "ready", Timestamp: 2}},
+		},
+		{
+			name:     "Quoted wrapper",
+			input:    `"{memgraph: {behind: 3, status: "replicating", ts: 7}}"`,
+			expected: map[string]ReplicaDBInfo{"memgraph": {Behind: 3, Status: "replicating", Timestamp: 7}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseDataInfo(tt.input)
+			if len(result) != len(tt.expected) {
+				t.Fatalf("parseDataInfo(%q) has %d entries, want %d", tt.input, len(result), len(tt.expected))
+			}
+			for db, expectedDB := range tt.expected {
+				if result[db] != expectedDB {
+					t.Errorf("parseDataInfo(%q)[%s] = %+v, want %+v", tt.input, db, result[db], expectedDB)
 				}
 			}
 		})

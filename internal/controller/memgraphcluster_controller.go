@@ -144,8 +144,8 @@ func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Record validation metrics if available
 	if cluster.Status.Validation != nil {
 		passed := cluster.Status.Validation.AllReplicasHealthy
-		r.metrics.RecordReplicationHealth(cluster.Name, cluster.Namespace,
-			cluster.Status.Validation.ReplicationLagMs, passed)
+		r.metrics.RecordReplicationLag(cluster.Name, cluster.Namespace,
+			cluster.Status.Validation.ReplicationLagMs)
 
 		if cluster.Status.Validation.LastConnectivityTest != nil {
 			r.metrics.RecordValidation(cluster.Name, cluster.Namespace,
@@ -215,6 +215,7 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 
 	// 7. Configure replication if we have a write instance and pods are ready
 	var registeredReplicas int32
+	var healthyReplicas int32
 	var replicationError error
 	if writeInstance != "" && len(pods) > 1 {
 		if err := r.ensureReplicationManager(); err != nil {
@@ -227,9 +228,11 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 					fmt.Sprintf("Failed to configure replication: %v", err))
 				replicationError = err
 			} else {
-				health, err := r.replicationManager.CheckReplicationHealth(ctx, cluster, writeInstance, log)
+				health, replicaInfos, err := r.replicationManager.CheckReplicationHealth(ctx, cluster, writeInstance, log)
 				if err == nil && health != nil {
 					registeredReplicas = health.TotalReplicas
+					healthyReplicas = health.HealthyReplicas
+					r.metrics.RecordReplicaSet(cluster.Name, cluster.Namespace, replicaInfos)
 				}
 			}
 		}
@@ -258,7 +261,7 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 	r.collectStorageMetrics(ctx, cluster, pods, writeInstance, log)
 
 	// 12. Update status
-	if err := r.updateStatus(ctx, cluster, pods, writeInstance, registeredReplicas); err != nil {
+	if err := r.updateStatus(ctx, cluster, pods, writeInstance, registeredReplicas, healthyReplicas); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -494,7 +497,7 @@ func isPodReady(pod *corev1.Pod) bool {
 }
 
 // updateStatus updates the cluster status
-func (r *MemgraphClusterReconciler) updateStatus(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, registeredReplicas int32) error {
+func (r *MemgraphClusterReconciler) updateStatus(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, registeredReplicas, healthyReplicas int32) error {
 	// Count ready instances
 	var readyCount int32
 	var readInstances []string
@@ -532,13 +535,13 @@ func (r *MemgraphClusterReconciler) updateStatus(ctx context.Context, cluster *m
 	cluster.Status.RegisteredReplicas = registeredReplicas
 
 	// Update conditions
-	r.updateConditions(cluster, writeInstance, readyCount, replicas, registeredReplicas)
+	r.updateConditions(cluster, writeInstance, readyCount, replicas, registeredReplicas, healthyReplicas)
 
 	return r.Status().Update(ctx, cluster)
 }
 
 // updateConditions updates the status conditions
-func (r *MemgraphClusterReconciler) updateConditions(cluster *memgraphv1alpha1.MemgraphCluster, writeInstance string, readyCount, replicas, registeredReplicas int32) {
+func (r *MemgraphClusterReconciler) updateConditions(cluster *memgraphv1alpha1.MemgraphCluster, writeInstance string, readyCount, replicas, registeredReplicas, healthyReplicas int32) {
 	now := metav1.Now()
 
 	// MainAvailable condition
@@ -561,15 +564,20 @@ func (r *MemgraphClusterReconciler) updateConditions(cluster *memgraphv1alpha1.M
 		Message:            fmt.Sprintf("%d/%d instances ready", readyCount, replicas),
 	})
 
-	// ReplicationHealthy condition
+	// ReplicationHealthy condition.
+	// Registration alone is not health: a replica can be registered and
+	// heartbeating while streaming no data (empty data_info). Require every
+	// registered replica to be actively streaming as well.
 	expectedReplicas := replicas - 1 // excluding main
-	replicationHealthy := registeredReplicas >= expectedReplicas && expectedReplicas >= 0
+	replicationHealthy := registeredReplicas >= expectedReplicas && expectedReplicas >= 0 &&
+		healthyReplicas >= registeredReplicas
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 		Type:               memgraphv1alpha1.ConditionTypeReplicationHealthy,
 		Status:             conditionStatus(replicationHealthy),
 		LastTransitionTime: now,
 		Reason:             conditionReason(replicationHealthy, "ReplicationHealthy", "ReplicationUnhealthy"),
-		Message:            fmt.Sprintf("%d/%d replicas registered with main", registeredReplicas, expectedReplicas),
+		Message: fmt.Sprintf("%d/%d replicas registered with main, %d/%d streaming",
+			registeredReplicas, expectedReplicas, healthyReplicas, registeredReplicas),
 	})
 
 	// Ready condition (overall)
@@ -617,6 +625,9 @@ func (r *MemgraphClusterReconciler) collectStorageMetrics(
 	}
 
 	mgClient := r.replicationManager.Client()
+	var mainInfo *memgraph.StorageInfo
+	replicaInfos := make(map[string]*memgraph.StorageInfo)
+
 	for _, pod := range pods {
 		if !isPodReady(&pod) {
 			continue
@@ -636,6 +647,28 @@ func (r *MemgraphClusterReconciler) collectStorageMetrics(
 		}
 
 		r.metrics.RecordStorageInfo(cluster.Name, cluster.Namespace, pod.Name, role, info)
+
+		if role == "main" {
+			mainInfo = info
+		} else {
+			replicaInfos[pod.Name] = info
+		}
+	}
+
+	// Record data drift (main minus replica) per replica. A desynced replica
+	// shows up as a persistent non-zero drift even when it is registered and
+	// heartbeating. Stale series are cleared first so removed replicas do not
+	// keep reporting old drift values.
+	r.metrics.DeleteReplicationDriftMetrics(cluster.Name, cluster.Namespace)
+	if mainInfo == nil {
+		return
+	}
+	for podName, info := range replicaInfos {
+		// Use the Memgraph replica name (underscored pod name) so drift and
+		// replica-health metrics share the same `replica` label value
+		replicaName := r.replicationManager.getReplicaName(podName)
+		r.metrics.RecordReplicationDrift(cluster.Name, cluster.Namespace, replicaName,
+			mainInfo.VertexCount-info.VertexCount, mainInfo.EdgeCount-info.EdgeCount)
 	}
 }
 
