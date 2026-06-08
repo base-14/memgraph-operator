@@ -140,6 +140,16 @@ type ReplicationSpec struct {
 	// +kubebuilder:default="ASYNC"
 	// +optional
 	Mode ReplicationMode `json:"mode,omitempty"`
+
+	// BehindAlertThreshold is the duration a replica may stay behind the main
+	// before being reported as unhealthy. Defaults to 5m. Must be greater than 0.
+	// Pointer so that an unset field is omitted and picks up the default, rather
+	// than serializing as "0s" (metav1.Duration is a struct, so omitempty alone
+	// would not omit its zero value).
+	// +kubebuilder:default="5m"
+	// +kubebuilder:validation:XValidation:rule=`!self.startsWith("-") && self != "0s"`,message="behindAlertThreshold must be a positive Go duration (e.g. '5m', '30s'); zero and negative values are not allowed"
+	// +optional
+	BehindAlertThreshold *metav1.Duration `json:"behindAlertThreshold,omitempty"`
 }
 
 // HighAvailabilitySpec defines automatic promotion/failover settings
