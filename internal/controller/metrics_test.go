@@ -161,6 +161,52 @@ func TestMetricsRecorder_DeleteClusterMetricsSweepsReplicaSeries(t *testing.T) {
 	}
 }
 
+func TestMetricsRecorder_RecordReplicaDataChannelAndBehind(t *testing.T) {
+	m := NewMetricsRecorder()
+	cluster, namespace, replica := "chan-cluster", testMetricsNamespace, "replica_0"
+
+	m.RecordReplicaDataChannel(cluster, namespace, replica, true)
+	if got := testutil.ToFloat64(replicaDataChannelUpGauge.WithLabelValues(cluster, namespace, replica)); got != 1 {
+		t.Errorf("data_channel_up = %v, want 1", got)
+	}
+
+	m.RecordReplicaDataChannel(cluster, namespace, replica, false)
+	if got := testutil.ToFloat64(replicaDataChannelUpGauge.WithLabelValues(cluster, namespace, replica)); got != 0 {
+		t.Errorf("data_channel_up = %v, want 0", got)
+	}
+
+	m.RecordReplicaBehindSeconds(cluster, namespace, replica, 42.5)
+	if got := testutil.ToFloat64(replicaBehindSecondsGauge.WithLabelValues(cluster, namespace, replica)); got != 42.5 {
+		t.Errorf("behind_seconds = %v, want 42.5", got)
+	}
+
+	// DeleteReplicaMetrics drops both series for the replica.
+	m.DeleteReplicaMetrics(cluster, namespace, replica)
+	if got := testutil.CollectAndCount(replicaDataChannelUpGauge); got != 0 {
+		t.Errorf("data_channel_up has %d series after delete, want 0", got)
+	}
+	if got := testutil.CollectAndCount(replicaBehindSecondsGauge); got != 0 {
+		t.Errorf("behind_seconds has %d series after delete, want 0", got)
+	}
+}
+
+func TestMetricsRecorder_DeleteClusterMetricsSweepsStatefulReplicaSeries(t *testing.T) {
+	m := NewMetricsRecorder()
+	cluster, namespace := "stateful-sweep-cluster", testMetricsNamespace
+
+	m.RecordReplicaDataChannel(cluster, namespace, "replica_0", true)
+	m.RecordReplicaBehindSeconds(cluster, namespace, "replica_0", 10)
+
+	m.DeleteClusterMetrics(cluster, namespace)
+
+	if got := testutil.CollectAndCount(replicaDataChannelUpGauge); got != 0 {
+		t.Errorf("data_channel_up has %d series after DeleteClusterMetrics, want 0", got)
+	}
+	if got := testutil.CollectAndCount(replicaBehindSecondsGauge); got != 0 {
+		t.Errorf("behind_seconds has %d series after DeleteClusterMetrics, want 0", got)
+	}
+}
+
 func TestMetricsRecorder_RecordInstanceHealth(t *testing.T) {
 	m := NewMetricsRecorder()
 

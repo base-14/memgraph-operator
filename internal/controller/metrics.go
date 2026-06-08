@@ -59,6 +59,26 @@ var (
 		[]string{"cluster", "namespace"},
 	)
 
+	// Stateful per-replica health metrics (owned by the replica classifier in
+	// ReplicationManager.CheckReplicationHealth). These complement the snapshot
+	// gauges below with time-aware signals: whether the data channel is up and
+	// how long the replica has continuously been behind.
+	replicaDataChannelUpGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_data_channel_up",
+			Help: "1 if the replica's data channel is established (data_info populated and status not invalid/unknown), else 0",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
+	replicaBehindSecondsGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "memgraph_replica_behind_seconds",
+			Help: "Number of seconds the replica has continuously been behind the main; 0 when caught up",
+		},
+		[]string{"cluster", "namespace", "replica"},
+	)
+
 	// Per-replica replication metrics (from SHOW REPLICAS data_info).
 	// These distinguish "registered" from "actually streaming data": a replica
 	// can be registered and heartbeating while replicating nothing (empty
@@ -290,6 +310,8 @@ func init() {
 		clusterRegisteredReplicasGauge,
 		replicationLagGauge,
 		replicationHealthyGauge,
+		replicaDataChannelUpGauge,
+		replicaBehindSecondsGauge,
 		replicaHealthyGauge,
 		replicaStatusGauge,
 		replicaBehindGauge,
@@ -520,6 +542,8 @@ func (m *MetricsRecorder) DeleteClusterMetrics(cluster, namespace string) {
 
 	// Sweep all per-replica and per-instance series for the cluster
 	partial := prometheus.Labels{"cluster": cluster, "namespace": namespace}
+	replicaDataChannelUpGauge.DeletePartialMatch(partial)
+	replicaBehindSecondsGauge.DeletePartialMatch(partial)
 	replicaHealthyGauge.DeletePartialMatch(partial)
 	replicaStatusGauge.DeletePartialMatch(partial)
 	replicaBehindGauge.DeletePartialMatch(partial)
@@ -528,4 +552,26 @@ func (m *MetricsRecorder) DeleteClusterMetrics(cluster, namespace string) {
 	replicationVertexDriftGauge.DeletePartialMatch(partial)
 	replicationEdgeDriftGauge.DeletePartialMatch(partial)
 	instanceHealthGauge.DeletePartialMatch(partial)
+}
+
+// RecordReplicaDataChannel sets the per-replica data-channel-up gauge.
+func (m *MetricsRecorder) RecordReplicaDataChannel(cluster, namespace, replica string, up bool) {
+	v := 0.0
+	if up {
+		v = 1.0
+	}
+	replicaDataChannelUpGauge.WithLabelValues(cluster, namespace, replica).Set(v)
+}
+
+// RecordReplicaBehindSeconds sets how long the replica has been behind, in seconds.
+// Pass 0 when the replica is caught up.
+func (m *MetricsRecorder) RecordReplicaBehindSeconds(cluster, namespace, replica string, seconds float64) {
+	replicaBehindSecondsGauge.WithLabelValues(cluster, namespace, replica).Set(seconds)
+}
+
+// DeleteReplicaMetrics removes the stateful per-replica gauges for a single
+// replica (called when a replica is unregistered or its cluster is deleted).
+func (m *MetricsRecorder) DeleteReplicaMetrics(cluster, namespace, replica string) {
+	replicaDataChannelUpGauge.DeleteLabelValues(cluster, namespace, replica)
+	replicaBehindSecondsGauge.DeleteLabelValues(cluster, namespace, replica)
 }

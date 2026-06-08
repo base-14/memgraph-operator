@@ -77,7 +77,10 @@ func (r *MemgraphClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	cluster := &memgraphv1alpha1.MemgraphCluster{}
 	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Clean up metrics for deleted cluster
+			// Clean up metrics and per-replica state for deleted cluster
+			if r.replicationManager != nil {
+				r.replicationManager.DeleteClusterState(req.Name, req.Namespace)
+			}
 			r.metrics.DeleteClusterMetrics(req.Name, req.Namespace)
 			return ctrl.Result{}, nil
 		}
@@ -301,6 +304,7 @@ func (r *MemgraphClusterReconciler) ensureReplicationManager() error {
 	}
 
 	r.replicationManager = NewReplicationManager(mgClient, r.Recorder)
+	r.replicationManager.SetMetricsRecorder(r.metrics)
 	return nil
 }
 
