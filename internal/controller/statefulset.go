@@ -190,12 +190,26 @@ func buildMemgraphArgs(cluster *memgraphv1alpha1.MemgraphCluster) []string {
 		walFlushEveryNTx = defaultWALFlushEveryNTx
 	}
 
-	return []string{
+	args := []string{
 		fmt.Sprintf("--log-level=%s", logLevel),
 		fmt.Sprintf("--log-file=%s/memgraph.log", dataVolumePath),
 		fmt.Sprintf("--memory-limit=%d", memoryLimit),
 		fmt.Sprintf("--storage-wal-file-flush-every-n-tx=%d", walFlushEveryNTx),
 	}
+
+	// Snapshot flags are only emitted when explicitly configured; otherwise
+	// Memgraph's built-in defaults apply (interval 300s, retention 3, on-exit true).
+	if v := cluster.Spec.Config.SnapshotIntervalSec; v != nil {
+		args = append(args, fmt.Sprintf("--storage-snapshot-interval-sec=%d", *v))
+	}
+	if v := cluster.Spec.Config.SnapshotRetentionCount; v != nil {
+		args = append(args, fmt.Sprintf("--storage-snapshot-retention-count=%d", *v))
+	}
+	if v := cluster.Spec.Config.SnapshotOnExit; v != nil {
+		args = append(args, fmt.Sprintf("--storage-snapshot-on-exit=%t", *v))
+	}
+
+	return args
 }
 
 // buildInitContainers builds the init containers for the pod

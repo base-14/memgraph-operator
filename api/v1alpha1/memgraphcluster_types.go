@@ -132,6 +132,23 @@ type MemgraphConfig struct {
 	// +kubebuilder:default=100000
 	// +optional
 	WALFlushEveryNTx int32 `json:"walFlushEveryNTx,omitempty"`
+
+	// SnapshotIntervalSec sets the periodic snapshot interval in seconds
+	// (Memgraph --storage-snapshot-interval-sec). Set to 0 to disable periodic
+	// snapshots entirely. If nil, Memgraph's built-in default (300s) is used.
+	// Pointer so that 0 (disabled) is distinguishable from unset.
+	// +optional
+	SnapshotIntervalSec *int32 `json:"snapshotIntervalSec,omitempty"`
+
+	// SnapshotRetentionCount sets how many periodic snapshots Memgraph keeps on
+	// disk (--storage-snapshot-retention-count). If nil, Memgraph's default is used.
+	// +optional
+	SnapshotRetentionCount *int32 `json:"snapshotRetentionCount,omitempty"`
+
+	// SnapshotOnExit controls whether Memgraph takes a snapshot on shutdown
+	// (--storage-snapshot-on-exit). If nil, Memgraph's default is used.
+	// +optional
+	SnapshotOnExit *bool `json:"snapshotOnExit,omitempty"`
 }
 
 // ReplicationSpec defines the replication settings

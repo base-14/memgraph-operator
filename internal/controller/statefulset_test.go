@@ -274,6 +274,63 @@ func TestBuildMemgraphArgs(t *testing.T) {
 	}
 }
 
+func TestBuildMemgraphArgsSnapshotFlags(t *testing.T) {
+	i32 := func(v int32) *int32 { return &v }
+	b := func(v bool) *bool { return &v }
+
+	hasArg := func(args []string, want string) bool {
+		for _, a := range args {
+			if a == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("no snapshot config emits no snapshot flags", func(t *testing.T) {
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{},
+		})
+		for _, a := range args {
+			if len(a) >= 18 && a[:18] == "--storage-snapshot" {
+				t.Errorf("unexpected snapshot flag %q; defaults should be left to Memgraph", a)
+			}
+		}
+	})
+
+	t.Run("interval 0 disables periodic snapshots", func(t *testing.T) {
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{
+				Config: memgraphv1alpha1.MemgraphConfig{SnapshotIntervalSec: i32(0)},
+			},
+		})
+		if !hasArg(args, "--storage-snapshot-interval-sec=0") {
+			t.Errorf("expected --storage-snapshot-interval-sec=0, got args: %v", args)
+		}
+	})
+
+	t.Run("all snapshot flags emitted when set", func(t *testing.T) {
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{
+				Config: memgraphv1alpha1.MemgraphConfig{
+					SnapshotIntervalSec:    i32(3600),
+					SnapshotRetentionCount: i32(2),
+					SnapshotOnExit:         b(false),
+				},
+			},
+		})
+		for _, want := range []string{
+			"--storage-snapshot-interval-sec=3600",
+			"--storage-snapshot-retention-count=2",
+			"--storage-snapshot-on-exit=false",
+		} {
+			if !hasArg(args, want) {
+				t.Errorf("expected %q, got args: %v", want, args)
+			}
+		}
+	})
+}
+
 func TestBuildInitContainers(t *testing.T) {
 	initContainers := buildInitContainers()
 
