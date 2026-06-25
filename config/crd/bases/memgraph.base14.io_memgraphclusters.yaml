@@ -985,6 +985,25 @@ spec:
                     description: MemoryLimit sets the memory limit in MB for Memgraph
                     format: int32
                     type: integer
+                  snapshotIntervalSec:
+                    description: |-
+                      SnapshotIntervalSec sets the periodic snapshot interval in seconds
+                      (Memgraph --storage-snapshot-interval-sec). Set to 0 to disable periodic
+                      snapshots entirely. If nil, Memgraph's built-in default (300s) is used.
+                      Pointer so that 0 (disabled) is distinguishable from unset.
+                    format: int32
+                    type: integer
+                  snapshotOnExit:
+                    description: |-
+                      SnapshotOnExit controls whether Memgraph takes a snapshot on shutdown
+                      (--storage-snapshot-on-exit). If nil, Memgraph's default is used.
+                    type: boolean
+                  snapshotRetentionCount:
+                    description: |-
+                      SnapshotRetentionCount sets how many periodic snapshots Memgraph keeps on
+                      disk (--storage-snapshot-retention-count). If nil, Memgraph's default is used.
+                    format: int32
+                    type: integer
                   walFlushEveryNTx:
                     default: 100000
                     description: WALFlushEveryNTx sets the number of transactions

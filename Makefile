@@ -107,6 +107,9 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
+.PHONY: ci
+ci: manifests generate fmt vet lint test build ## Run all CI checks: codegen, format, vet, lint, test, build.
+
 ##@ Build
 
 .PHONY: build
