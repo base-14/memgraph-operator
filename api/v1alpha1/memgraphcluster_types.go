@@ -189,6 +189,16 @@ type HighAvailabilitySpec struct {
 	PreferredMain string `json:"preferredMain,omitempty"`
 }
 
+// SnapshotConcurrencyPolicy defines how concurrent snapshot job executions are handled
+// +kubebuilder:validation:Enum=Allow;Forbid;Replace
+type SnapshotConcurrencyPolicy string
+
+const (
+	SnapshotConcurrencyAllow   SnapshotConcurrencyPolicy = "Allow"
+	SnapshotConcurrencyForbid  SnapshotConcurrencyPolicy = "Forbid"
+	SnapshotConcurrencyReplace SnapshotConcurrencyPolicy = "Replace"
+)
+
 // SnapshotSpec defines snapshot and backup configuration
 type SnapshotSpec struct {
 	// Enabled enables periodic snapshots
@@ -200,6 +210,29 @@ type SnapshotSpec struct {
 	// +kubebuilder:default="*/15 * * * *"
 	// +optional
 	Schedule string `json:"schedule,omitempty"`
+
+	// ConcurrencyPolicy controls what happens when a snapshot job is still running
+	// at the next scheduled tick. Forbid skips the tick, which is safe because it
+	// prevents overlapping CREATE SNAPSHOT runs.
+	// +kubebuilder:default=Forbid
+	// +optional
+	ConcurrencyPolicy SnapshotConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
+
+	// ActiveDeadlineSeconds is the maximum time a snapshot job may run before it is
+	// marked failed and its pods terminated. Without it, a job whose pod can never be
+	// scheduled stays Active forever and blocks every later run under Forbid.
+	// +kubebuilder:default=600
+	// +kubebuilder:validation:Minimum=60
+	// +optional
+	ActiveDeadlineSeconds *int64 `json:"activeDeadlineSeconds,omitempty"`
+
+	// StartingDeadlineSeconds bounds how far back the CronJob controller looks for
+	// missed schedules. Without it, more than 100 missed starts permanently disables
+	// scheduling with "too many missed start times".
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=10
+	// +optional
+	StartingDeadlineSeconds *int64 `json:"startingDeadlineSeconds,omitempty"`
 
 	// RetentionCount is the number of snapshots to retain on disk
 	// +kubebuilder:default=5

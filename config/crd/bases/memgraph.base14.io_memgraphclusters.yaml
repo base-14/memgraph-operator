@@ -1157,6 +1157,26 @@ spec:
               snapshot:
                 description: Snapshot defines snapshot and backup configuration
                 properties:
+                  activeDeadlineSeconds:
+                    default: 600
+                    description: |-
+                      ActiveDeadlineSeconds is the maximum time a snapshot job may run before it is
+                      marked failed and its pods terminated. Without it, a job whose pod can never be
+                      scheduled stays Active forever and blocks every later run under Forbid.
+                    format: int64
+                    minimum: 60
+                    type: integer
+                  concurrencyPolicy:
+                    default: Forbid
+                    description: |-
+                      ConcurrencyPolicy controls what happens when a snapshot job is still running
+                      at the next scheduled tick. Forbid skips the tick, which is safe because it
+                      prevents overlapping CREATE SNAPSHOT runs.
+                    enum:
+                    - Allow
+                    - Forbid
+                    - Replace
+                    type: string
                   enabled:
                     default: true
                     description: Enabled enables periodic snapshots
@@ -1215,6 +1235,15 @@ spec:
                     default: '*/15 * * * *'
                     description: Schedule is a cron expression for snapshot frequency
                     type: string
+                  startingDeadlineSeconds:
+                    default: 300
+                    description: |-
+                      StartingDeadlineSeconds bounds how far back the CronJob controller looks for
+                      missed schedules. Without it, more than 100 missed starts permanently disables
+                      scheduling with "too many missed start times".
+                    format: int64
+                    minimum: 10
+                    type: integer
                 type: object
               storage:
                 description: Storage defines the persistent storage configuration

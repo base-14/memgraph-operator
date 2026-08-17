@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -250,6 +251,60 @@ func TestBuildSnapshotCronJobDefaults(t *testing.T) {
 
 	if initContainers[0].Image != "memgraph/memgraph:2.21.0" {
 		t.Errorf("expected default image 'memgraph/memgraph:2.21.0', got %s", initContainers[0].Image)
+	}
+}
+
+func TestBuildSnapshotCronJobWedgePreventionDefaults(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+		},
+	}
+
+	cj := buildSnapshotCronJob(cluster)
+
+	if cj.Spec.ConcurrencyPolicy != batchv1.ForbidConcurrent {
+		t.Errorf("expected Forbid, got %s", cj.Spec.ConcurrencyPolicy)
+	}
+	if cj.Spec.StartingDeadlineSeconds == nil {
+		t.Fatal("StartingDeadlineSeconds must be set or a wedged CronJob trips the >100 missed-starts lockout")
+	}
+	if *cj.Spec.StartingDeadlineSeconds != defaultStartingDeadlineSeconds {
+		t.Errorf("expected %d, got %d", defaultStartingDeadlineSeconds, *cj.Spec.StartingDeadlineSeconds)
+	}
+	deadline := cj.Spec.JobTemplate.Spec.ActiveDeadlineSeconds
+	if deadline == nil {
+		t.Fatal("ActiveDeadlineSeconds must be set or an unschedulable job blocks the schedule forever")
+	}
+	if *deadline != defaultActiveDeadlineSeconds {
+		t.Errorf("expected %d, got %d", defaultActiveDeadlineSeconds, *deadline)
+	}
+}
+
+func TestBuildSnapshotCronJobWedgePreventionOverrides(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				Enabled:                 true,
+				ConcurrencyPolicy:       memgraphv1alpha1.SnapshotConcurrencyReplace,
+				ActiveDeadlineSeconds:   ptr(int64(1800)),
+				StartingDeadlineSeconds: ptr(int64(120)),
+			},
+		},
+	}
+
+	cj := buildSnapshotCronJob(cluster)
+
+	if cj.Spec.ConcurrencyPolicy != batchv1.ReplaceConcurrent {
+		t.Errorf("expected Replace, got %s", cj.Spec.ConcurrencyPolicy)
+	}
+	if *cj.Spec.StartingDeadlineSeconds != 120 {
+		t.Errorf("expected 120, got %d", *cj.Spec.StartingDeadlineSeconds)
+	}
+	if *cj.Spec.JobTemplate.Spec.ActiveDeadlineSeconds != 1800 {
+		t.Errorf("expected 1800, got %d", *cj.Spec.JobTemplate.Spec.ActiveDeadlineSeconds)
 	}
 }
 

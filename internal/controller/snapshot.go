@@ -26,6 +26,14 @@ const (
 
 	// Shared volume name for snapshot data between containers
 	snapshotDataVolume = "snapshot-data"
+
+	// defaultActiveDeadlineSeconds bounds how long a snapshot job may run before it
+	// is failed, so a wedged job cannot block the schedule under Forbid.
+	defaultActiveDeadlineSeconds = int64(600)
+
+	// defaultStartingDeadlineSeconds bounds the CronJob controller's missed-start
+	// lookback window.
+	defaultStartingDeadlineSeconds = int64(300)
 )
 
 // SnapshotManager handles Memgraph snapshot operations
@@ -60,6 +68,23 @@ func buildSnapshotCronJob(cluster *memgraphv1alpha1.MemgraphCluster) *batchv1.Cr
 		schedule = "*/15 * * * *" // Default: every 15 minutes
 	}
 
+	// In-code defaults mirror the kubebuilder defaults so unit tests that build a
+	// bare struct — with no API server defaulting — get the same values.
+	concurrency := batchv1.ConcurrencyPolicy(cluster.Spec.Snapshot.ConcurrencyPolicy)
+	if concurrency == "" {
+		concurrency = batchv1.ForbidConcurrent
+	}
+
+	startingDeadline := cluster.Spec.Snapshot.StartingDeadlineSeconds
+	if startingDeadline == nil {
+		startingDeadline = ptr(defaultStartingDeadlineSeconds)
+	}
+
+	activeDeadline := cluster.Spec.Snapshot.ActiveDeadlineSeconds
+	if activeDeadline == nil {
+		activeDeadline = ptr(defaultActiveDeadlineSeconds)
+	}
+
 	// Use the same image as memgraph for the snapshot job
 	memgraphImage := cluster.Spec.Image
 	if memgraphImage == "" {
@@ -91,7 +116,8 @@ func buildSnapshotCronJob(cluster *memgraphv1alpha1.MemgraphCluster) *batchv1.Cr
 		},
 		Spec: batchv1.CronJobSpec{
 			Schedule:                   schedule,
-			ConcurrencyPolicy:          batchv1.ForbidConcurrent,
+			ConcurrencyPolicy:          concurrency,
+			StartingDeadlineSeconds:    startingDeadline,
 			SuccessfulJobsHistoryLimit: &successfulJobsHistoryLimit,
 			FailedJobsHistoryLimit:     &failedJobsHistoryLimit,
 			JobTemplate: batchv1.JobTemplateSpec{
@@ -99,6 +125,7 @@ func buildSnapshotCronJob(cluster *memgraphv1alpha1.MemgraphCluster) *batchv1.Cr
 					Labels: labelsForCluster(cluster),
 				},
 				Spec: batchv1.JobSpec{
+					ActiveDeadlineSeconds: activeDeadline,
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels: labelsForCluster(cluster),
