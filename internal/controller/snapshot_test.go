@@ -29,7 +29,7 @@ func TestBuildSnapshotCronJob(t *testing.T) {
 				},
 			},
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled:  true,
+				Enabled:  ptr(true),
 				Schedule: "0 */6 * * *", // Every 6 hours
 			},
 		},
@@ -99,7 +99,7 @@ func TestBuildSnapshotCronJobPropagatesScheduling(t *testing.T) {
 					},
 				},
 			},
-			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: ptr(true)},
 		},
 	}
 
@@ -130,7 +130,7 @@ func TestBuildSnapshotCronJobWithS3(t *testing.T) {
 			Replicas: 3,
 			Image:    "memgraph/memgraph:2.21.0",
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled:  true,
+				Enabled:  ptr(true),
 				Schedule: "*/15 * * * *",
 				S3: &memgraphv1alpha1.S3BackupSpec{
 					Enabled:   true,
@@ -230,7 +230,7 @@ func TestBuildSnapshotCronJobDefaults(t *testing.T) {
 		},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled: true,
+				Enabled: ptr(true),
 				// No schedule specified - should use default
 			},
 		},
@@ -258,7 +258,7 @@ func TestBuildSnapshotCronJobWedgePreventionDefaults(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
-			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: ptr(true)},
 		},
 	}
 
@@ -287,7 +287,7 @@ func TestBuildSnapshotCronJobWedgePreventionOverrides(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled:                 true,
+				Enabled:                 ptr(true),
 				ConcurrencyPolicy:       memgraphv1alpha1.SnapshotConcurrencyReplace,
 				ActiveDeadlineSeconds:   ptr(int64(1800)),
 				StartingDeadlineSeconds: ptr(int64(120)),
@@ -312,7 +312,7 @@ func snapshotTestCluster(tolerated bool) *memgraphv1alpha1.MemgraphCluster {
 	c := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
-			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true, Schedule: "0 * * * *"},
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: ptr(true), Schedule: "0 * * * *"},
 		},
 	}
 	if tolerated {
@@ -386,7 +386,7 @@ func TestBuildSnapshotInitContainers(t *testing.T) {
 		},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled: true,
+				Enabled: ptr(true),
 			},
 		},
 	}
@@ -422,7 +422,7 @@ func TestBuildSnapshotInitContainersWithS3(t *testing.T) {
 		},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled: true,
+				Enabled: ptr(true),
 				S3: &memgraphv1alpha1.S3BackupSpec{
 					Enabled: true,
 					Bucket:  "backup-bucket",
@@ -606,7 +606,7 @@ func TestBuildSnapshotVolumes(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
-						Enabled: true,
+						Enabled: ptr(true),
 					},
 				},
 			},
@@ -617,7 +617,7 @@ func TestBuildSnapshotVolumes(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
-						Enabled: true,
+						Enabled: ptr(true),
 						S3: &memgraphv1alpha1.S3BackupSpec{
 							Enabled: true,
 							Bucket:  "test-bucket",
@@ -659,7 +659,7 @@ func TestBuildSnapshotMainContainers(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
-						Enabled: true,
+						Enabled: ptr(true),
 					},
 				},
 			},
@@ -670,7 +670,7 @@ func TestBuildSnapshotMainContainers(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
-						Enabled: true,
+						Enabled: ptr(true),
 						S3: &memgraphv1alpha1.S3BackupSpec{
 							Enabled: true,
 							Bucket:  "test-bucket",
@@ -728,7 +728,7 @@ func TestBuildS3EnvWithNilS3(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled: true,
+				Enabled: ptr(true),
 			},
 		},
 	}
