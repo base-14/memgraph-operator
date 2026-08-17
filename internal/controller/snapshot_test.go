@@ -74,6 +74,50 @@ func TestBuildSnapshotCronJob(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshotCronJobPropagatesScheduling(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			NodeSelector: map[string]string{"workload": "database"},
+			Tolerations: []corev1.Toleration{{
+				Key:      "kubernetes.io/arch",
+				Operator: corev1.TolerationOpEqual,
+				Value:    "arm64",
+				Effect:   corev1.TaintEffectNoSchedule,
+			}},
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+							MatchExpressions: []corev1.NodeSelectorRequirement{{
+								Key:      "kubernetes.io/arch",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"arm64"},
+							}},
+						}},
+					},
+				},
+			},
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+		},
+	}
+
+	podSpec := buildSnapshotCronJob(cluster).Spec.JobTemplate.Spec.Template.Spec
+
+	if podSpec.NodeSelector["workload"] != "database" {
+		t.Errorf("NodeSelector not propagated, got %v", podSpec.NodeSelector)
+	}
+	if len(podSpec.Tolerations) != 1 {
+		t.Fatalf("expected 1 toleration, got %d", len(podSpec.Tolerations))
+	}
+	if podSpec.Tolerations[0].Key != "kubernetes.io/arch" {
+		t.Errorf("expected toleration key 'kubernetes.io/arch', got %s", podSpec.Tolerations[0].Key)
+	}
+	if podSpec.Affinity == nil || podSpec.Affinity.NodeAffinity == nil {
+		t.Error("Affinity not propagated")
+	}
+}
+
 func TestBuildSnapshotCronJobWithS3(t *testing.T) {
 	secretRef := &corev1.LocalObjectReference{Name: "s3-credentials"}
 	cluster := &memgraphv1alpha1.MemgraphCluster{
