@@ -201,10 +201,11 @@ const (
 
 // SnapshotSpec defines snapshot and backup configuration
 type SnapshotSpec struct {
-	// Enabled enables periodic snapshots
+	// Enabled enables periodic snapshots. Set to false to disable them and remove
+	// the snapshot CronJob.
 	// +kubebuilder:default=true
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Schedule is a cron expression for snapshot frequency
 	// +kubebuilder:default="*/15 * * * *"
@@ -242,6 +243,16 @@ type SnapshotSpec struct {
 	// S3 defines optional S3 backup configuration
 	// +optional
 	S3 *S3BackupSpec `json:"s3,omitempty"`
+}
+
+// IsEnabled reports whether periodic snapshots are enabled. A nil Enabled means
+// the field was never set, which matches the CRD default of true.
+//
+// Enabled is a *bool rather than a bool because with `omitempty` a false bool is
+// dropped on marshal, so the API server re-applies +kubebuilder:default=true and
+// the operator's own full-object writes silently re-enable snapshots.
+func (s *SnapshotSpec) IsEnabled() bool {
+	return s.Enabled == nil || *s.Enabled
 }
 
 // S3BackupSpec defines S3 backup configuration

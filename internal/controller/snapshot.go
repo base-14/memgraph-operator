@@ -424,7 +424,7 @@ func snapshotContainersEqual(existing, desired []corev1.Container) bool {
 // reconcileSnapshotCronJob ensures the snapshot CronJob exists and is configured correctly
 func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, log *zap.Logger) error {
 	// If snapshots are not enabled, ensure CronJob doesn't exist
-	if !cluster.Spec.Snapshot.Enabled {
+	if !cluster.Spec.Snapshot.IsEnabled() {
 		return r.deleteSnapshotCronJob(ctx, cluster, log)
 	}
 
