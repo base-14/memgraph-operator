@@ -3,13 +3,20 @@
 package controller
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 )
@@ -792,5 +799,39 @@ func TestNewSnapshotManager(t *testing.T) {
 	sm := NewSnapshotManager(nil)
 	if sm == nil {
 		t.Error("NewSnapshotManager returned nil")
+	}
+}
+
+func TestReconcileSnapshotCronJobDeletesWhenDisabled(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := memgraphv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add memgraph scheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add batch scheme: %v", err)
+	}
+
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: ptr(false)},
+		},
+	}
+	orphan := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-snapshot", Namespace: "default"},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, orphan).Build()
+	r := &MemgraphClusterReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
+
+	if err := r.reconcileSnapshotCronJob(context.Background(), cluster, zap.NewNop()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	err := c.Get(context.Background(),
+		types.NamespacedName{Name: "test-cluster-snapshot", Namespace: "default"},
+		&batchv1.CronJob{})
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected CronJob to be deleted, got err=%v", err)
 	}
 }
