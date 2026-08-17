@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -376,6 +377,50 @@ func buildS3Env(cluster *memgraphv1alpha1.MemgraphCluster) []corev1.EnvVar {
 	return envVars
 }
 
+// snapshotCronJobNeedsUpdate reports whether an existing snapshot CronJob has
+// drifted from the desired spec.
+//
+// Only fields the operator sets are compared. Comparing whole specs would loop
+// forever: the API server defaults many PodSpec fields that the operator never
+// sets, so the two would never compare equal.
+func snapshotCronJobNeedsUpdate(existing, desired *batchv1.CronJob) bool {
+	if existing.Spec.Schedule != desired.Spec.Schedule ||
+		existing.Spec.ConcurrencyPolicy != desired.Spec.ConcurrencyPolicy ||
+		!equality.Semantic.DeepEqual(existing.Spec.StartingDeadlineSeconds, desired.Spec.StartingDeadlineSeconds) {
+		return true
+	}
+
+	existingJob := &existing.Spec.JobTemplate.Spec
+	desiredJob := &desired.Spec.JobTemplate.Spec
+	if !equality.Semantic.DeepEqual(existingJob.ActiveDeadlineSeconds, desiredJob.ActiveDeadlineSeconds) {
+		return true
+	}
+
+	e, d := &existingJob.Template.Spec, &desiredJob.Template.Spec
+	return !equality.Semantic.DeepEqual(e.NodeSelector, d.NodeSelector) ||
+		!equality.Semantic.DeepEqual(e.Tolerations, d.Tolerations) ||
+		!equality.Semantic.DeepEqual(e.Affinity, d.Affinity) ||
+		!snapshotContainersEqual(e.InitContainers, d.InitContainers) ||
+		!snapshotContainersEqual(e.Containers, d.Containers)
+}
+
+// snapshotContainersEqual compares containers on the fields the operator controls.
+// Full container comparison is avoided because the API server defaults
+// imagePullPolicy, terminationMessagePath and others.
+func snapshotContainersEqual(existing, desired []corev1.Container) bool {
+	if len(existing) != len(desired) {
+		return false
+	}
+	for i := range desired {
+		if existing[i].Name != desired[i].Name ||
+			existing[i].Image != desired[i].Image ||
+			!equality.Semantic.DeepEqual(existing[i].Args, desired[i].Args) {
+			return false
+		}
+	}
+	return true
+}
+
 // reconcileSnapshotCronJob ensures the snapshot CronJob exists and is configured correctly
 func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, log *zap.Logger) error {
 	// If snapshots are not enabled, ensure CronJob doesn't exist
@@ -405,11 +450,7 @@ func (r *MemgraphClusterReconciler) reconcileSnapshotCronJob(ctx context.Context
 		return err
 	}
 
-	// Update if schedule or S3 config changed
-	needsUpdate := existing.Spec.Schedule != desired.Spec.Schedule ||
-		len(existing.Spec.JobTemplate.Spec.Template.Spec.Containers) != len(desired.Spec.JobTemplate.Spec.Template.Spec.Containers)
-
-	if needsUpdate {
+	if snapshotCronJobNeedsUpdate(existing, desired) {
 		log.Info("updating snapshot CronJob",
 			zap.String("cronjob", existing.Name),
 			zap.String("oldSchedule", existing.Spec.Schedule),

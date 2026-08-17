@@ -308,6 +308,76 @@ func TestBuildSnapshotCronJobWedgePreventionOverrides(t *testing.T) {
 	}
 }
 
+func snapshotTestCluster(tolerated bool) *memgraphv1alpha1.MemgraphCluster {
+	c := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true, Schedule: "0 * * * *"},
+		},
+	}
+	if tolerated {
+		c.Spec.Tolerations = []corev1.Toleration{{
+			Key:      "kubernetes.io/arch",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "arm64",
+			Effect:   corev1.TaintEffectNoSchedule,
+		}}
+	}
+	return c
+}
+
+func TestSnapshotCronJobNeedsUpdateStableRoundTrip(t *testing.T) {
+	cluster := snapshotTestCluster(true)
+	if snapshotCronJobNeedsUpdate(buildSnapshotCronJob(cluster), buildSnapshotCronJob(cluster)) {
+		t.Error("identical CronJobs reported as drifted - this would cause an infinite update loop")
+	}
+}
+
+// The API server defaults many PodSpec fields the operator never sets. If those
+// defaults were compared, every reconcile would report drift and the operator
+// would rewrite the CronJob forever.
+func TestSnapshotCronJobNeedsUpdateIgnoresServerDefaults(t *testing.T) {
+	cluster := snapshotTestCluster(true)
+	desired := buildSnapshotCronJob(cluster)
+
+	existing := buildSnapshotCronJob(cluster)
+	podSpec := &existing.Spec.JobTemplate.Spec.Template.Spec
+	podSpec.DNSPolicy = corev1.DNSClusterFirst
+	podSpec.SchedulerName = "default-scheduler"
+	podSpec.TerminationGracePeriodSeconds = ptr(int64(30))
+	podSpec.RestartPolicy = corev1.RestartPolicyOnFailure
+	for i := range podSpec.Containers {
+		podSpec.Containers[i].ImagePullPolicy = corev1.PullIfNotPresent
+		podSpec.Containers[i].TerminationMessagePath = "/dev/termination-log"
+	}
+	existing.Spec.JobTemplate.Spec.BackoffLimit = ptr(int32(6))
+	existing.Spec.Suspend = ptr(false)
+
+	if snapshotCronJobNeedsUpdate(existing, desired) {
+		t.Error("server-defaulted fields reported as drift - the operator would rewrite the CronJob on every reconcile")
+	}
+}
+
+func TestSnapshotCronJobNeedsUpdateDetectsTolerationDrift(t *testing.T) {
+	// existing = what a pre-fix operator created; desired = what we build now.
+	existing := buildSnapshotCronJob(snapshotTestCluster(false))
+	desired := buildSnapshotCronJob(snapshotTestCluster(true))
+
+	if !snapshotCronJobNeedsUpdate(existing, desired) {
+		t.Error("toleration drift not detected - already-deployed CronJobs would never be repaired")
+	}
+}
+
+func TestSnapshotCronJobNeedsUpdateDetectsScheduleDrift(t *testing.T) {
+	existing := buildSnapshotCronJob(snapshotTestCluster(true))
+	desired := buildSnapshotCronJob(snapshotTestCluster(true))
+	desired.Spec.Schedule = "*/5 * * * *"
+
+	if !snapshotCronJobNeedsUpdate(existing, desired) {
+		t.Error("schedule drift not detected")
+	}
+}
+
 func TestBuildSnapshotInitContainers(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{
