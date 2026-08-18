@@ -1179,7 +1179,9 @@ spec:
                     type: string
                   enabled:
                     default: true
-                    description: Enabled enables periodic snapshots
+                    description: |-
+                      Enabled enables periodic snapshots. Set to false to disable them and remove
+                      the snapshot CronJob.
                     type: boolean
                   retentionCount:
                     default: 5

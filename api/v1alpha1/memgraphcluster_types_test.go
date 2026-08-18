@@ -3,12 +3,16 @@
 package v1alpha1
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func boolPtr(v bool) *bool { return &v }
 
 func TestMemgraphCluster_DeepCopy(t *testing.T) {
 	original := &MemgraphCluster{
@@ -36,7 +40,7 @@ func TestMemgraphCluster_DeepCopy(t *testing.T) {
 				PreferredMain:          "test-cluster-0",
 			},
 			Snapshot: SnapshotSpec{
-				Enabled:        true,
+				Enabled:        boolPtr(true),
 				Schedule:       "*/15 * * * *",
 				RetentionCount: 5,
 				S3: &S3BackupSpec{
@@ -170,7 +174,7 @@ func TestMemgraphClusterSpec_DeepCopy(t *testing.T) {
 			ReadSuffix:     "-secondary",
 		},
 		Snapshot: SnapshotSpec{
-			Enabled:        true,
+			Enabled:        boolPtr(true),
 			Schedule:       "0 * * * *",
 			RetentionCount: 10,
 			S3: &S3BackupSpec{
@@ -291,7 +295,7 @@ func TestStorageSpec_DeepCopy(t *testing.T) {
 
 func TestSnapshotSpec_DeepCopy(t *testing.T) {
 	original := SnapshotSpec{
-		Enabled:        true,
+		Enabled:        boolPtr(true),
 		Schedule:       "0 0 * * *",
 		RetentionCount: 7,
 		S3: &S3BackupSpec{
@@ -733,7 +737,7 @@ func TestAllDeepCopyFunctions(t *testing.T) {
 	}
 
 	// SnapshotSpec
-	snapshotSpec := SnapshotSpec{Enabled: true, Schedule: "0 * * * *"}
+	snapshotSpec := SnapshotSpec{Enabled: boolPtr(true), Schedule: "0 * * * *"}
 	if snapCopy := snapshotSpec.DeepCopy(); snapCopy == nil {
 		t.Error("SnapshotSpec.DeepCopy returned nil")
 	}
@@ -756,5 +760,38 @@ func TestAllDeepCopyFunctions(t *testing.T) {
 	valStatus := ValidationStatus{LastConnectivityTest: &now, Instances: []InstanceValidationStatus{ivStatus}}
 	if valCopy := valStatus.DeepCopy(); valCopy == nil {
 		t.Error("ValidationStatus.DeepCopy returned nil")
+	}
+}
+
+func TestSnapshotSpecIsEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		spec SnapshotSpec
+		want bool
+	}{
+		{"nil means enabled, matching the CRD default", SnapshotSpec{}, true},
+		{"explicit false", SnapshotSpec{Enabled: boolPtr(false)}, false},
+		{"explicit true", SnapshotSpec{Enabled: boolPtr(true)}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.spec.IsEnabled(); got != tt.want {
+				t.Errorf("IsEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Regression test: a non-pointer bool with omitempty is dropped on
+// marshal, so the API server re-applies +kubebuilder:default=true and the
+// operator's own full-object write silently re-enables snapshots.
+func TestSnapshotSpecEnabledFalseSurvivesMarshal(t *testing.T) {
+	disabled := false
+	out, err := json.Marshal(SnapshotSpec{Enabled: &disabled, Schedule: "0 * * * *"})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"enabled":false`) {
+		t.Errorf("enabled:false was dropped on marshal: %s", out)
 	}
 }

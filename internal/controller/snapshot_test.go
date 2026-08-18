@@ -3,13 +3,20 @@
 package controller
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	memgraphv1alpha1 "github.com/base14/memgraph-operator/api/v1alpha1"
 )
@@ -29,7 +36,7 @@ func TestBuildSnapshotCronJob(t *testing.T) {
 				},
 			},
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled:  true,
+				Enabled:  ptr(true),
 				Schedule: "0 */6 * * *", // Every 6 hours
 			},
 		},
@@ -99,7 +106,7 @@ func TestBuildSnapshotCronJobPropagatesScheduling(t *testing.T) {
 					},
 				},
 			},
-			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: ptr(true)},
 		},
 	}
 
@@ -130,7 +137,7 @@ func TestBuildSnapshotCronJobWithS3(t *testing.T) {
 			Replicas: 3,
 			Image:    "memgraph/memgraph:2.21.0",
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled:  true,
+				Enabled:  ptr(true),
 				Schedule: "*/15 * * * *",
 				S3: &memgraphv1alpha1.S3BackupSpec{
 					Enabled:   true,
@@ -230,7 +237,7 @@ func TestBuildSnapshotCronJobDefaults(t *testing.T) {
 		},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled: true,
+				Enabled: ptr(true),
 				// No schedule specified - should use default
 			},
 		},
@@ -258,7 +265,7 @@ func TestBuildSnapshotCronJobWedgePreventionDefaults(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
-			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: ptr(true)},
 		},
 	}
 
@@ -287,7 +294,7 @@ func TestBuildSnapshotCronJobWedgePreventionOverrides(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled:                 true,
+				Enabled:                 ptr(true),
 				ConcurrencyPolicy:       memgraphv1alpha1.SnapshotConcurrencyReplace,
 				ActiveDeadlineSeconds:   ptr(int64(1800)),
 				StartingDeadlineSeconds: ptr(int64(120)),
@@ -312,7 +319,7 @@ func snapshotTestCluster(tolerated bool) *memgraphv1alpha1.MemgraphCluster {
 	c := &memgraphv1alpha1.MemgraphCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
-			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true, Schedule: "0 * * * *"},
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: ptr(true), Schedule: "0 * * * *"},
 		},
 	}
 	if tolerated {
@@ -386,7 +393,7 @@ func TestBuildSnapshotInitContainers(t *testing.T) {
 		},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled: true,
+				Enabled: ptr(true),
 			},
 		},
 	}
@@ -422,7 +429,7 @@ func TestBuildSnapshotInitContainersWithS3(t *testing.T) {
 		},
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled: true,
+				Enabled: ptr(true),
 				S3: &memgraphv1alpha1.S3BackupSpec{
 					Enabled: true,
 					Bucket:  "backup-bucket",
@@ -606,7 +613,7 @@ func TestBuildSnapshotVolumes(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
-						Enabled: true,
+						Enabled: ptr(true),
 					},
 				},
 			},
@@ -617,7 +624,7 @@ func TestBuildSnapshotVolumes(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
-						Enabled: true,
+						Enabled: ptr(true),
 						S3: &memgraphv1alpha1.S3BackupSpec{
 							Enabled: true,
 							Bucket:  "test-bucket",
@@ -659,7 +666,7 @@ func TestBuildSnapshotMainContainers(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
-						Enabled: true,
+						Enabled: ptr(true),
 					},
 				},
 			},
@@ -670,7 +677,7 @@ func TestBuildSnapshotMainContainers(t *testing.T) {
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{
 					Snapshot: memgraphv1alpha1.SnapshotSpec{
-						Enabled: true,
+						Enabled: ptr(true),
 						S3: &memgraphv1alpha1.S3BackupSpec{
 							Enabled: true,
 							Bucket:  "test-bucket",
@@ -728,7 +735,7 @@ func TestBuildS3EnvWithNilS3(t *testing.T) {
 	cluster := &memgraphv1alpha1.MemgraphCluster{
 		Spec: memgraphv1alpha1.MemgraphClusterSpec{
 			Snapshot: memgraphv1alpha1.SnapshotSpec{
-				Enabled: true,
+				Enabled: ptr(true),
 			},
 		},
 	}
@@ -792,5 +799,39 @@ func TestNewSnapshotManager(t *testing.T) {
 	sm := NewSnapshotManager(nil)
 	if sm == nil {
 		t.Error("NewSnapshotManager returned nil")
+	}
+}
+
+func TestReconcileSnapshotCronJobDeletesWhenDisabled(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := memgraphv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add memgraph scheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add batch scheme: %v", err)
+	}
+
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: ptr(false)},
+		},
+	}
+	orphan := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-snapshot", Namespace: "default"},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, orphan).Build()
+	r := &MemgraphClusterReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
+
+	if err := r.reconcileSnapshotCronJob(context.Background(), cluster, zap.NewNop()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	err := c.Get(context.Background(),
+		types.NamespacedName{Name: "test-cluster-snapshot", Namespace: "default"},
+		&batchv1.CronJob{})
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected CronJob to be deleted, got err=%v", err)
 	}
 }
