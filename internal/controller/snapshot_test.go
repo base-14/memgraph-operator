@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,6 +72,50 @@ func TestBuildSnapshotCronJob(t *testing.T) {
 
 	if containers[0].Name != "complete" {
 		t.Errorf("expected container name 'complete', got %s", containers[0].Name)
+	}
+}
+
+func TestBuildSnapshotCronJobPropagatesScheduling(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			NodeSelector: map[string]string{"workload": "database"},
+			Tolerations: []corev1.Toleration{{
+				Key:      "kubernetes.io/arch",
+				Operator: corev1.TolerationOpEqual,
+				Value:    "arm64",
+				Effect:   corev1.TaintEffectNoSchedule,
+			}},
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+							MatchExpressions: []corev1.NodeSelectorRequirement{{
+								Key:      "kubernetes.io/arch",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"arm64"},
+							}},
+						}},
+					},
+				},
+			},
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+		},
+	}
+
+	podSpec := buildSnapshotCronJob(cluster).Spec.JobTemplate.Spec.Template.Spec
+
+	if podSpec.NodeSelector["workload"] != "database" {
+		t.Errorf("NodeSelector not propagated, got %v", podSpec.NodeSelector)
+	}
+	if len(podSpec.Tolerations) != 1 {
+		t.Fatalf("expected 1 toleration, got %d", len(podSpec.Tolerations))
+	}
+	if podSpec.Tolerations[0].Key != "kubernetes.io/arch" {
+		t.Errorf("expected toleration key 'kubernetes.io/arch', got %s", podSpec.Tolerations[0].Key)
+	}
+	if podSpec.Affinity == nil || podSpec.Affinity.NodeAffinity == nil {
+		t.Error("Affinity not propagated")
 	}
 }
 
@@ -206,6 +251,130 @@ func TestBuildSnapshotCronJobDefaults(t *testing.T) {
 
 	if initContainers[0].Image != "memgraph/memgraph:2.21.0" {
 		t.Errorf("expected default image 'memgraph/memgraph:2.21.0', got %s", initContainers[0].Image)
+	}
+}
+
+func TestBuildSnapshotCronJobWedgePreventionDefaults(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true},
+		},
+	}
+
+	cj := buildSnapshotCronJob(cluster)
+
+	if cj.Spec.ConcurrencyPolicy != batchv1.ForbidConcurrent {
+		t.Errorf("expected Forbid, got %s", cj.Spec.ConcurrencyPolicy)
+	}
+	if cj.Spec.StartingDeadlineSeconds == nil {
+		t.Fatal("StartingDeadlineSeconds must be set or a wedged CronJob trips the >100 missed-starts lockout")
+	}
+	if *cj.Spec.StartingDeadlineSeconds != defaultStartingDeadlineSeconds {
+		t.Errorf("expected %d, got %d", defaultStartingDeadlineSeconds, *cj.Spec.StartingDeadlineSeconds)
+	}
+	deadline := cj.Spec.JobTemplate.Spec.ActiveDeadlineSeconds
+	if deadline == nil {
+		t.Fatal("ActiveDeadlineSeconds must be set or an unschedulable job blocks the schedule forever")
+	}
+	if *deadline != defaultActiveDeadlineSeconds {
+		t.Errorf("expected %d, got %d", defaultActiveDeadlineSeconds, *deadline)
+	}
+}
+
+func TestBuildSnapshotCronJobWedgePreventionOverrides(t *testing.T) {
+	cluster := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{
+				Enabled:                 true,
+				ConcurrencyPolicy:       memgraphv1alpha1.SnapshotConcurrencyReplace,
+				ActiveDeadlineSeconds:   ptr(int64(1800)),
+				StartingDeadlineSeconds: ptr(int64(120)),
+			},
+		},
+	}
+
+	cj := buildSnapshotCronJob(cluster)
+
+	if cj.Spec.ConcurrencyPolicy != batchv1.ReplaceConcurrent {
+		t.Errorf("expected Replace, got %s", cj.Spec.ConcurrencyPolicy)
+	}
+	if *cj.Spec.StartingDeadlineSeconds != 120 {
+		t.Errorf("expected 120, got %d", *cj.Spec.StartingDeadlineSeconds)
+	}
+	if *cj.Spec.JobTemplate.Spec.ActiveDeadlineSeconds != 1800 {
+		t.Errorf("expected 1800, got %d", *cj.Spec.JobTemplate.Spec.ActiveDeadlineSeconds)
+	}
+}
+
+func snapshotTestCluster(tolerated bool) *memgraphv1alpha1.MemgraphCluster {
+	c := &memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: memgraphv1alpha1.MemgraphClusterSpec{
+			Snapshot: memgraphv1alpha1.SnapshotSpec{Enabled: true, Schedule: "0 * * * *"},
+		},
+	}
+	if tolerated {
+		c.Spec.Tolerations = []corev1.Toleration{{
+			Key:      "kubernetes.io/arch",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "arm64",
+			Effect:   corev1.TaintEffectNoSchedule,
+		}}
+	}
+	return c
+}
+
+func TestSnapshotCronJobNeedsUpdateStableRoundTrip(t *testing.T) {
+	cluster := snapshotTestCluster(true)
+	if snapshotCronJobNeedsUpdate(buildSnapshotCronJob(cluster), buildSnapshotCronJob(cluster)) {
+		t.Error("identical CronJobs reported as drifted - this would cause an infinite update loop")
+	}
+}
+
+// The API server defaults many PodSpec fields the operator never sets. If those
+// defaults were compared, every reconcile would report drift and the operator
+// would rewrite the CronJob forever.
+func TestSnapshotCronJobNeedsUpdateIgnoresServerDefaults(t *testing.T) {
+	cluster := snapshotTestCluster(true)
+	desired := buildSnapshotCronJob(cluster)
+
+	existing := buildSnapshotCronJob(cluster)
+	podSpec := &existing.Spec.JobTemplate.Spec.Template.Spec
+	podSpec.DNSPolicy = corev1.DNSClusterFirst
+	podSpec.SchedulerName = "default-scheduler"
+	podSpec.TerminationGracePeriodSeconds = ptr(int64(30))
+	podSpec.RestartPolicy = corev1.RestartPolicyOnFailure
+	for i := range podSpec.Containers {
+		podSpec.Containers[i].ImagePullPolicy = corev1.PullIfNotPresent
+		podSpec.Containers[i].TerminationMessagePath = "/dev/termination-log"
+	}
+	existing.Spec.JobTemplate.Spec.BackoffLimit = ptr(int32(6))
+	existing.Spec.Suspend = ptr(false)
+
+	if snapshotCronJobNeedsUpdate(existing, desired) {
+		t.Error("server-defaulted fields reported as drift - the operator would rewrite the CronJob on every reconcile")
+	}
+}
+
+func TestSnapshotCronJobNeedsUpdateDetectsTolerationDrift(t *testing.T) {
+	// existing = what a pre-fix operator created; desired = what we build now.
+	existing := buildSnapshotCronJob(snapshotTestCluster(false))
+	desired := buildSnapshotCronJob(snapshotTestCluster(true))
+
+	if !snapshotCronJobNeedsUpdate(existing, desired) {
+		t.Error("toleration drift not detected - already-deployed CronJobs would never be repaired")
+	}
+}
+
+func TestSnapshotCronJobNeedsUpdateDetectsScheduleDrift(t *testing.T) {
+	existing := buildSnapshotCronJob(snapshotTestCluster(true))
+	desired := buildSnapshotCronJob(snapshotTestCluster(true))
+	desired.Spec.Schedule = "*/5 * * * *"
+
+	if !snapshotCronJobNeedsUpdate(existing, desired) {
+		t.Error("schedule drift not detected")
 	}
 }
 

@@ -45,3 +45,9 @@ spec:
     enabled: true
     schedule: "*/15 * * * *"
     retentionCount: 5
+    # Forbid prevents overlapping CREATE SNAPSHOT runs. activeDeadlineSeconds
+    # ensures a job that cannot be scheduled fails rather than blocking the
+    # schedule forever.
+    concurrencyPolicy: Forbid
+    activeDeadlineSeconds: 600
+    startingDeadlineSeconds: 300
