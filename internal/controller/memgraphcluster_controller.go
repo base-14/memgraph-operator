@@ -241,11 +241,11 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 		}
 	}
 
-	// 8. Reconcile snapshot CronJob if enabled
-	if cluster.Spec.Snapshot.Enabled {
-		if err := r.reconcileSnapshotCronJob(ctx, cluster, log); err != nil {
-			log.Error("failed to reconcile snapshot CronJob", zap.Error(err))
-		}
+	// 8. Reconcile snapshot CronJob. Called unconditionally: the function itself
+	// handles the disabled case by deleting any existing CronJob, which is
+	// unreachable if the call is gated on Enabled.
+	if err := r.reconcileSnapshotCronJob(ctx, cluster, log); err != nil {
+		log.Error("failed to reconcile snapshot CronJob", zap.Error(err))
 	}
 
 	// 9. Update snapshot status
