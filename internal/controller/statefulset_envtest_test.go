@@ -72,17 +72,17 @@ var _ = Describe("MemgraphCluster extraArgs", func() {
 		sts := &appsv1.StatefulSet{}
 		key := types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}
 		Expect(k8sClient.Get(ctx, key, sts)).To(Succeed())
-		Expect(sts.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--log-file=/var/lib/memgraph/memgraph.log"))
+		Expect(sts.Spec.Template.Spec.Containers[0].Args).To(ContainElements("--log-file=", "--also-log-to-stderr=true"))
 
 		Expect(k8sClient.Get(ctx, key, cluster)).To(Succeed())
-		cluster.Spec.Config.ExtraArgs = []string{"--log-file=", "--telemetry-enabled=false"}
+		cluster.Spec.Config.ExtraArgs = []string{"--log-file=/var/lib/memgraph/memgraph.log", "--telemetry-enabled=false"}
 		Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
 		Expect(r.reconcileStatefulSet(ctx, cluster, zap.NewNop())).To(Succeed())
 
 		Expect(k8sClient.Get(ctx, key, sts)).To(Succeed())
 		args := sts.Spec.Template.Spec.Containers[0].Args
-		Expect(args).To(ContainElements("--log-file=", "--telemetry-enabled=false"))
-		Expect(args).NotTo(ContainElement("--log-file=/var/lib/memgraph/memgraph.log"))
+		Expect(args).To(ContainElements("--log-file=/var/lib/memgraph/memgraph.log", "--telemetry-enabled=false"))
+		Expect(args).NotTo(ContainElement("--log-file="))
 		Expect(sts.Spec.Template.Spec.Containers[0].Lifecycle).To(BeNil())
 	})
 

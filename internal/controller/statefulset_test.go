@@ -253,9 +253,8 @@ func TestBuildMemgraphArgs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			args := buildMemgraphArgs(tt.cluster)
 
-			// Verify we have 4 args
-			if len(args) != 4 {
-				t.Errorf("Args count = %d, want 4", len(args))
+			if len(args) != 5 {
+				t.Errorf("Args count = %d, want 5", len(args))
 			}
 
 			// Find log level arg
@@ -571,11 +570,11 @@ func TestBuildMemgraphArgsExtraArgs(t *testing.T) {
 			Spec: memgraphv1alpha1.MemgraphClusterSpec{
 				Config: memgraphv1alpha1.MemgraphConfig{
 					LogLevel:  "WARNING",
-					ExtraArgs: []string{"--log-file=", "--log-level=INFO"},
+					ExtraArgs: []string{"--log-file=/tmp/x.log", "--log-level=INFO"},
 				},
 			},
 		})
-		want := map[string]string{"log-file": "--log-file=", "log-level": "--log-level=INFO"}
+		want := map[string]string{"log-file": "--log-file=/tmp/x.log", "log-level": "--log-level=INFO"}
 		for name, wantArg := range want {
 			var found []string
 			for _, a := range args {
@@ -676,7 +675,7 @@ func TestApplyStatefulSetPodSpecDrift(t *testing.T) {
 
 	t.Run("args change is applied", func(t *testing.T) {
 		existing := buildStatefulSet(newCluster())
-		desired := buildStatefulSet(newCluster("--log-file="))
+		desired := buildStatefulSet(newCluster("--telemetry-enabled=false"))
 		if !applyStatefulSetPodSpecDrift(existing, desired) {
 			t.Fatal("expected drift on args change")
 		}
@@ -780,6 +779,44 @@ func TestApplyStatefulSetPodSpecDrift(t *testing.T) {
 		spec := existing.Spec.Template.Spec
 		if len(spec.NodeSelector) != 0 || len(spec.Tolerations) != 0 {
 			t.Errorf("nodeSelector = %v, tolerations = %v, want both empty", spec.NodeSelector, spec.Tolerations)
+		}
+	})
+}
+
+func TestBuildMemgraphArgsLogsToStderrByDefault(t *testing.T) {
+	flagValues := func(args []string, name string) []string {
+		var out []string
+		for _, a := range args {
+			if memgraphFlagName(a) == name {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+
+	t.Run("default writes no log file and logs to stderr", func(t *testing.T) {
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{})
+		if got := flagValues(args, "log-file"); len(got) != 1 || got[0] != "--log-file=" {
+			t.Errorf("log-file args = %v, want [--log-file=]", got)
+		}
+		if got := flagValues(args, "also-log-to-stderr"); len(got) != 1 || got[0] != "--also-log-to-stderr=true" {
+			t.Errorf("also-log-to-stderr args = %v, want [--also-log-to-stderr=true]", got)
+		}
+	})
+
+	t.Run("extraArgs can restore file logging", func(t *testing.T) {
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{
+				Config: memgraphv1alpha1.MemgraphConfig{
+					ExtraArgs: []string{"--log-file=/var/lib/memgraph/memgraph.log", "--also-log-to-stderr=false"},
+				},
+			},
+		})
+		if got := flagValues(args, "log-file"); len(got) != 1 || got[0] != "--log-file=/var/lib/memgraph/memgraph.log" {
+			t.Errorf("log-file args = %v", got)
+		}
+		if got := flagValues(args, "also-log-to-stderr"); len(got) != 1 || got[0] != "--also-log-to-stderr=false" {
+			t.Errorf("also-log-to-stderr args = %v", got)
 		}
 	})
 }

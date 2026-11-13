@@ -177,7 +177,8 @@ func buildMemgraphArgs(cluster *memgraphv1alpha1.MemgraphCluster) []string {
 
 	args := []string{
 		fmt.Sprintf("--log-level=%s", logLevel),
-		fmt.Sprintf("--log-file=%s/memgraph.log", dataVolumePath),
+		"--log-file=",
+		"--also-log-to-stderr=true",
 		fmt.Sprintf("--memory-limit=%d", memoryLimit),
 		fmt.Sprintf("--storage-wal-file-flush-every-n-tx=%d", walFlushEveryNTx),
 	}
