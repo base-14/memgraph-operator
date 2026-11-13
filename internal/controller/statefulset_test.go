@@ -550,3 +550,236 @@ func TestBuildStatefulSetWithAffinity(t *testing.T) {
 		t.Error("PodAntiAffinity is nil")
 	}
 }
+
+func TestBuildMemgraphArgsExtraArgs(t *testing.T) {
+	t.Run("extra args are appended after operator args", func(t *testing.T) {
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{
+				Config: memgraphv1alpha1.MemgraphConfig{
+					ExtraArgs: []string{"--telemetry-enabled=false", "--storage-gc-cycle-sec=60"},
+				},
+			},
+		})
+		n := len(args)
+		if n < 2 || args[n-2] != "--telemetry-enabled=false" || args[n-1] != "--storage-gc-cycle-sec=60" {
+			t.Errorf("extra args not appended in order at the end, got %v", args)
+		}
+	})
+
+	t.Run("extra arg replaces the operator flag of the same name", func(t *testing.T) {
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{
+				Config: memgraphv1alpha1.MemgraphConfig{
+					LogLevel:  "WARNING",
+					ExtraArgs: []string{"--log-file=", "--log-level=INFO"},
+				},
+			},
+		})
+		want := map[string]string{"log-file": "--log-file=", "log-level": "--log-level=INFO"}
+		for name, wantArg := range want {
+			var found []string
+			for _, a := range args {
+				if memgraphFlagName(a) == name {
+					found = append(found, a)
+				}
+			}
+			if len(found) != 1 || found[0] != wantArg {
+				t.Errorf("flag %s: got %v, want exactly [%s]; all args %v", name, found, wantArg, args)
+			}
+		}
+	})
+
+	t.Run("extra arg overrides a typed snapshot field", func(t *testing.T) {
+		retention := int32(3)
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{
+				Config: memgraphv1alpha1.MemgraphConfig{
+					SnapshotRetentionCount: &retention,
+					ExtraArgs:              []string{"--storage-snapshot-retention-count=2"},
+				},
+			},
+		})
+		count := 0
+		for _, a := range args {
+			if memgraphFlagName(a) == "storage-snapshot-retention-count" {
+				count++
+				if a != "--storage-snapshot-retention-count=2" {
+					t.Errorf("unexpected retention arg %q", a)
+				}
+			}
+		}
+		if count != 1 {
+			t.Errorf("retention flag count = %d, want 1; args %v", count, args)
+		}
+	})
+
+	t.Run("boolean flag without value still overrides", func(t *testing.T) {
+		onExit := false
+		args := buildMemgraphArgs(&memgraphv1alpha1.MemgraphCluster{
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{
+				Config: memgraphv1alpha1.MemgraphConfig{
+					SnapshotOnExit: &onExit,
+					ExtraArgs:      []string{"--storage-snapshot-on-exit"},
+				},
+			},
+		})
+		for _, a := range args {
+			if a == "--storage-snapshot-on-exit=false" {
+				t.Errorf("operator flag should be dropped when overridden, got %v", args)
+			}
+		}
+	})
+}
+
+func TestMemgraphFlagName(t *testing.T) {
+	tests := map[string]string{
+		"--log-file=":                   "log-file",
+		"--log-file=/tmp/x.log":         "log-file",
+		"--telemetry-enabled":           "telemetry-enabled",
+		"-log-level=INFO":               "log-level",
+		"--query-modules-directory=a=b": "query-modules-directory",
+	}
+	for in, want := range tests {
+		if got := memgraphFlagName(in); got != want {
+			t.Errorf("memgraphFlagName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBuildStatefulSetHasNoPreStopSnapshot(t *testing.T) {
+	sts := buildStatefulSet(&memgraphv1alpha1.MemgraphCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+	})
+	c := sts.Spec.Template.Spec.Containers[0]
+	if c.Lifecycle != nil && c.Lifecycle.PreStop != nil {
+		t.Errorf("memgraph container must not have a preStop hook, got %+v", c.Lifecycle.PreStop)
+	}
+}
+
+func TestApplyStatefulSetPodSpecDrift(t *testing.T) {
+	newCluster := func(extra ...string) *memgraphv1alpha1.MemgraphCluster {
+		return &memgraphv1alpha1.MemgraphCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+			Spec: memgraphv1alpha1.MemgraphClusterSpec{
+				Config: memgraphv1alpha1.MemgraphConfig{ExtraArgs: extra},
+			},
+		}
+	}
+
+	t.Run("no drift when built from the same spec", func(t *testing.T) {
+		existing := buildStatefulSet(newCluster("--telemetry-enabled=false"))
+		desired := buildStatefulSet(newCluster("--telemetry-enabled=false"))
+		if applyStatefulSetPodSpecDrift(existing, desired) {
+			t.Error("expected no drift")
+		}
+	})
+
+	t.Run("args change is applied", func(t *testing.T) {
+		existing := buildStatefulSet(newCluster())
+		desired := buildStatefulSet(newCluster("--log-file="))
+		if !applyStatefulSetPodSpecDrift(existing, desired) {
+			t.Fatal("expected drift on args change")
+		}
+		got := existing.Spec.Template.Spec.Containers[0].Args
+		want := desired.Spec.Template.Spec.Containers[0].Args
+		if len(got) != len(want) {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("args = %v, want %v", got, want)
+			}
+		}
+	})
+
+	t.Run("legacy preStop hook is removed", func(t *testing.T) {
+		existing := buildStatefulSet(newCluster())
+		existing.Spec.Template.Spec.Containers[0].Lifecycle = &corev1.Lifecycle{
+			PreStop: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{Command: []string{"/bin/bash", "-c", "echo snapshot"}},
+			},
+		}
+		desired := buildStatefulSet(newCluster())
+		if !applyStatefulSetPodSpecDrift(existing, desired) {
+			t.Fatal("expected drift when existing has a preStop hook")
+		}
+		if existing.Spec.Template.Spec.Containers[0].Lifecycle != nil {
+			t.Errorf("lifecycle = %+v, want nil", existing.Spec.Template.Spec.Containers[0].Lifecycle)
+		}
+	})
+
+	t.Run("resources change is applied", func(t *testing.T) {
+		before := newCluster()
+		before.Spec.Resources = corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+		}
+		after := newCluster()
+		after.Spec.Resources = corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+		}
+		existing := buildStatefulSet(before)
+		if !applyStatefulSetPodSpecDrift(existing, buildStatefulSet(after)) {
+			t.Fatal("expected drift on resources change")
+		}
+		got := existing.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory]
+		if got.String() != "4Gi" {
+			t.Errorf("memory limit = %s, want 4Gi", got.String())
+		}
+	})
+
+	t.Run("equal quantities in different notation are not drift", func(t *testing.T) {
+		before := newCluster()
+		before.Spec.Resources = corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+		}
+		after := newCluster()
+		after.Spec.Resources = corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1024Mi")},
+		}
+		if applyStatefulSetPodSpecDrift(buildStatefulSet(before), buildStatefulSet(after)) {
+			t.Error("1Gi and 1024Mi should not be treated as drift")
+		}
+	})
+
+	t.Run("scheduling changes are applied", func(t *testing.T) {
+		after := newCluster()
+		after.Spec.NodeSelector = map[string]string{"kubernetes.io/arch": "arm64"}
+		after.Spec.Tolerations = []corev1.Toleration{
+			{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "memgraph", Effect: corev1.TaintEffectNoSchedule},
+		}
+		after.Spec.Affinity = &corev1.Affinity{
+			PodAntiAffinity: &corev1.PodAntiAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "kubernetes.io/hostname"}},
+			},
+		}
+		existing := buildStatefulSet(newCluster())
+		if !applyStatefulSetPodSpecDrift(existing, buildStatefulSet(after)) {
+			t.Fatal("expected drift on scheduling change")
+		}
+		spec := existing.Spec.Template.Spec
+		if spec.NodeSelector["kubernetes.io/arch"] != "arm64" {
+			t.Errorf("nodeSelector = %v", spec.NodeSelector)
+		}
+		if len(spec.Tolerations) != 1 || spec.Tolerations[0].Key != "dedicated" {
+			t.Errorf("tolerations = %v", spec.Tolerations)
+		}
+		if spec.Affinity == nil || spec.Affinity.PodAntiAffinity == nil {
+			t.Errorf("affinity = %v", spec.Affinity)
+		}
+	})
+
+	t.Run("removing scheduling settings is applied", func(t *testing.T) {
+		before := newCluster()
+		before.Spec.NodeSelector = map[string]string{"disktype": "ssd"}
+		before.Spec.Tolerations = []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}}
+		existing := buildStatefulSet(before)
+		if !applyStatefulSetPodSpecDrift(existing, buildStatefulSet(newCluster())) {
+			t.Fatal("expected drift when scheduling settings are removed")
+		}
+		spec := existing.Spec.Template.Spec
+		if len(spec.NodeSelector) != 0 || len(spec.Tolerations) != 0 {
+			t.Errorf("nodeSelector = %v, tolerations = %v, want both empty", spec.NodeSelector, spec.Tolerations)
+		}
+	})
+}

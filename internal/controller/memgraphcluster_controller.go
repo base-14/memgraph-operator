@@ -5,6 +5,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -205,6 +207,12 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 
 	// 4. Determine write instance (first ready pod if none assigned)
 	writeInstance := r.determineWriteInstance(cluster, pods)
+	if writeInstance == "" && waitsForMain(cluster, cluster.Status.WriteInstance) {
+		log.Info("main instance is not ready; waiting for it instead of promoting a replica",
+			zap.String("main", cluster.Status.WriteInstance))
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, EventReasonWaitingForMain,
+			fmt.Sprintf("Main %s is not ready; high availability is disabled, so no replica is promoted", cluster.Status.WriteInstance))
+	}
 
 	// 5. Reconcile write service
 	if err := r.reconcileWriteService(ctx, cluster, writeInstance, log); err != nil {
@@ -379,6 +387,16 @@ func (r *MemgraphClusterReconciler) reconcileStatefulSet(ctx context.Context, cl
 		needsUpdate = true
 	}
 
+	if applyStatefulSetPodSpecDrift(existing, desired) {
+		log.Info("updating StatefulSet pod spec",
+			zap.String("statefulset", existing.Name),
+			zap.Strings("args", desired.Spec.Template.Spec.Containers[0].Args),
+			zap.String("resources", desired.Spec.Template.Spec.Containers[0].Resources.String()))
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, EventReasonUpdatingConfig,
+			fmt.Sprintf("Updating StatefulSet %s pod spec (flags, resources or scheduling)", existing.Name))
+		needsUpdate = true
+	}
+
 	if needsUpdate {
 		return r.Update(ctx, existing)
 	}
@@ -466,6 +484,9 @@ func (r *MemgraphClusterReconciler) determineWriteInstance(cluster *memgraphv1al
 				return cluster.Status.WriteInstance
 			}
 		}
+		if waitsForMain(cluster, cluster.Status.WriteInstance) {
+			return ""
+		}
 	}
 
 	// Check if HA config specifies a preferred main
@@ -484,6 +505,35 @@ func (r *MemgraphClusterReconciler) determineWriteInstance(cluster *memgraphv1al
 		}
 	}
 
+	return ""
+}
+
+func waitsForMain(cluster *memgraphv1alpha1.MemgraphCluster, main string) bool {
+	if cluster.Spec.HighAvailability != nil && cluster.Spec.HighAvailability.Enabled {
+		return false
+	}
+	ordinal, ok := strings.CutPrefix(main, cluster.Name+"-")
+	if !ok {
+		return false
+	}
+	n, err := strconv.Atoi(ordinal)
+	if err != nil || n < 0 {
+		return false
+	}
+	replicas := cluster.Spec.Replicas
+	if replicas == 0 {
+		replicas = 3
+	}
+	return int32(n) < replicas
+}
+
+func writeInstanceForStatus(cluster *memgraphv1alpha1.MemgraphCluster, writeInstance string) string {
+	if writeInstance != "" {
+		return writeInstance
+	}
+	if waitsForMain(cluster, cluster.Status.WriteInstance) {
+		return cluster.Status.WriteInstance
+	}
 	return ""
 }
 
@@ -533,7 +583,7 @@ func (r *MemgraphClusterReconciler) updateStatus(ctx context.Context, cluster *m
 
 	// Update status fields
 	cluster.Status.Phase = phase
-	cluster.Status.WriteInstance = writeInstance
+	cluster.Status.WriteInstance = writeInstanceForStatus(cluster, writeInstance)
 	cluster.Status.ReadInstances = readInstances
 	cluster.Status.ReadyInstances = readyCount
 	cluster.Status.RegisteredReplicas = registeredReplicas

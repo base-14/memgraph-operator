@@ -149,6 +149,13 @@ type MemgraphConfig struct {
 	// (--storage-snapshot-on-exit). If nil, Memgraph's default is used.
 	// +optional
 	SnapshotOnExit *bool `json:"snapshotOnExit,omitempty"`
+
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule=`self.all(a, a.startsWith('--'))`,message="extraArgs entries must start with '--' and carry their value as --name=value"
+	// +kubebuilder:validation:XValidation:rule=`!self.exists(a, a.matches('^--(data-directory|bolt-port|bolt-address|management-port|coordinator-[a-z-]+)(=.*)?$'))`,message="extraArgs must not set flags managed by the operator: data-directory, bolt-port, bolt-address, management-port, coordinator-*"
+	// +optional
+	ExtraArgs []string `json:"extraArgs,omitempty"`
 }
 
 // ReplicationSpec defines the replication settings

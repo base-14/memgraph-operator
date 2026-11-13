@@ -15,6 +15,8 @@ func TestEventReasonConstants(t *testing.T) {
 		{"EventReasonClusterDegraded", EventReasonClusterDegraded},
 		{"EventReasonCreatingStatefulSet", EventReasonCreatingStatefulSet},
 		{"EventReasonScalingStatefulSet", EventReasonScalingStatefulSet},
+		{"EventReasonUpdatingConfig", EventReasonUpdatingConfig},
+		{"EventReasonWaitingForMain", EventReasonWaitingForMain},
 		{"EventReasonMainInstanceConfigured", EventReasonMainInstanceConfigured},
 		{"EventReasonReplicaRegistered", EventReasonReplicaRegistered},
 		{"EventReasonReplicaUnregistered", EventReasonReplicaUnregistered},

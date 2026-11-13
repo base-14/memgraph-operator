@@ -243,8 +243,85 @@ func TestDetermineWriteInstance(t *testing.T) {
 			expected: "cluster-0",
 		},
 		{
-			name: "pick new write instance when current is not ready",
+			name: "wait for current main when it is not ready and HA is disabled",
 			cluster: &memgraphv1alpha1.MemgraphCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+				Spec:       memgraphv1alpha1.MemgraphClusterSpec{Replicas: 2},
+				Status: memgraphv1alpha1.MemgraphClusterStatus{
+					WriteInstance: "cluster-0",
+				},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "cluster-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "cluster-1"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+						},
+					},
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "wait for current main while its pod is being recreated and HA is disabled",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+				Spec:       memgraphv1alpha1.MemgraphClusterSpec{Replicas: 2},
+				Status: memgraphv1alpha1.MemgraphClusterStatus{
+					WriteInstance: "cluster-0",
+				},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "cluster-1"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+						},
+					},
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "re-select main when the recorded main was scaled away",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+				Spec:       memgraphv1alpha1.MemgraphClusterSpec{Replicas: 2},
+				Status: memgraphv1alpha1.MemgraphClusterStatus{
+					WriteInstance: "cluster-2",
+				},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "cluster-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+						},
+					},
+				},
+			},
+			expected: "cluster-0",
+		},
+		{
+			name: "fail over to a ready pod when current is not ready and HA is enabled",
+			cluster: &memgraphv1alpha1.MemgraphCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+				Spec: memgraphv1alpha1.MemgraphClusterSpec{
+					Replicas:         2,
+					HighAvailability: &memgraphv1alpha1.HighAvailabilitySpec{Enabled: true},
+				},
 				Status: memgraphv1alpha1.MemgraphClusterStatus{
 					WriteInstance: "cluster-0",
 				},
@@ -560,6 +637,39 @@ func TestDetermineWriteInstanceEdgeCases(t *testing.T) {
 			got := reconciler.determineWriteInstance(tt.cluster, tt.pods)
 			if got != tt.expected {
 				t.Errorf("determineWriteInstance() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestWriteInstanceForStatus(t *testing.T) {
+	cluster := func(ha *memgraphv1alpha1.HighAvailabilitySpec, recorded string) *memgraphv1alpha1.MemgraphCluster {
+		return &memgraphv1alpha1.MemgraphCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+			Spec:       memgraphv1alpha1.MemgraphClusterSpec{Replicas: 2, HighAvailability: ha},
+			Status:     memgraphv1alpha1.MemgraphClusterStatus{WriteInstance: recorded},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		cluster       *memgraphv1alpha1.MemgraphCluster
+		writeInstance string
+		expected      string
+	}{
+		{"available main is recorded", cluster(nil, "cluster-0"), "cluster-0", "cluster-0"},
+		{"first main is recorded", cluster(nil, ""), "cluster-1", "cluster-1"},
+		{"unavailable main is kept with HA disabled", cluster(nil, "cluster-0"), "", "cluster-0"},
+		{"unavailable main is kept with HA explicitly disabled", cluster(&memgraphv1alpha1.HighAvailabilitySpec{Enabled: false}, "cluster-0"), "", "cluster-0"},
+		{"unavailable main is cleared with HA enabled", cluster(&memgraphv1alpha1.HighAvailabilitySpec{Enabled: true}, "cluster-0"), "", ""},
+		{"scaled-away main is cleared", cluster(nil, "cluster-5"), "", ""},
+		{"foreign pod name is cleared", cluster(nil, "other-0"), "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := writeInstanceForStatus(tt.cluster, tt.writeInstance); got != tt.expected {
+				t.Errorf("writeInstanceForStatus() = %q, want %q", got, tt.expected)
 			}
 		})
 	}

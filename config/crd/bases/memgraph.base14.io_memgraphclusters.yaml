@@ -970,6 +970,20 @@ spec:
               config:
                 description: Config defines Memgraph-specific configuration
                 properties:
+                  extraArgs:
+                    items:
+                      maxLength: 512
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-validations:
+                    - message: extraArgs entries must start with '--' and carry their
+                        value as --name=value
+                      rule: self.all(a, a.startsWith('--'))
+                    - message: 'extraArgs must not set flags managed by the operator:
+                        data-directory, bolt-port, bolt-address, management-port,
+                        coordinator-*'
+                      rule: '!self.exists(a, a.matches(''^--(data-directory|bolt-port|bolt-address|management-port|coordinator-[a-z-]+)(=.*)?$''))'
                   logLevel:
                     default: WARNING
                     description: LogLevel sets the Memgraph log level

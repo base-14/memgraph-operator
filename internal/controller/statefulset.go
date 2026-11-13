@@ -4,9 +4,11 @@ package controller
 
 import (
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -67,20 +69,6 @@ func buildStatefulSet(cluster *memgraphv1alpha1.MemgraphCluster) *appsv1.Statefu
 	// Build init containers
 	initContainers := buildInitContainers()
 
-	// Build preStop hook for graceful shutdown with snapshot
-	preStopHook := &corev1.LifecycleHandler{
-		Exec: &corev1.ExecAction{
-			Command: []string{
-				"/bin/bash",
-				"-c",
-				`echo "Creating snapshot before shutdown..."
-echo "CREATE SNAPSHOT;" | mgconsole --host 127.0.0.1 --port 7687 --use-ssl=false
-echo "Snapshot created, proceeding with shutdown"
-sleep 5`,
-			},
-		},
-	}
-
 	terminationGracePeriod := defaultTerminationGracePeriod
 
 	sts := &appsv1.StatefulSet{
@@ -135,9 +123,6 @@ sleep 5`,
 									Name:      dataVolumeName,
 									MountPath: dataVolumePath,
 								},
-							},
-							Lifecycle: &corev1.Lifecycle{
-								PreStop: preStopHook,
 							},
 							StartupProbe:   buildStartupProbe(),
 							LivenessProbe:  buildLivenessProbe(),
@@ -209,7 +194,66 @@ func buildMemgraphArgs(cluster *memgraphv1alpha1.MemgraphCluster) []string {
 		args = append(args, fmt.Sprintf("--storage-snapshot-on-exit=%t", *v))
 	}
 
-	return args
+	extra := cluster.Spec.Config.ExtraArgs
+	if len(extra) == 0 {
+		return args
+	}
+
+	overridden := make(map[string]bool, len(extra))
+	for _, a := range extra {
+		overridden[memgraphFlagName(a)] = true
+	}
+
+	merged := make([]string, 0, len(args)+len(extra))
+	for _, a := range args {
+		if !overridden[memgraphFlagName(a)] {
+			merged = append(merged, a)
+		}
+	}
+	return append(merged, extra...)
+}
+
+func memgraphFlagName(arg string) string {
+	name := strings.TrimLeft(arg, "-")
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	return name
+}
+
+func applyStatefulSetPodSpecDrift(existing, desired *appsv1.StatefulSet) bool {
+	current := &existing.Spec.Template.Spec.Containers[0]
+	want := desired.Spec.Template.Spec.Containers[0]
+	changed := false
+
+	if !equality.Semantic.DeepEqual(current.Args, want.Args) {
+		current.Args = want.Args
+		changed = true
+	}
+	if !equality.Semantic.DeepEqual(current.Lifecycle, want.Lifecycle) {
+		current.Lifecycle = want.Lifecycle
+		changed = true
+	}
+	if !equality.Semantic.DeepEqual(current.Resources, want.Resources) {
+		current.Resources = want.Resources
+		changed = true
+	}
+
+	pod := &existing.Spec.Template.Spec
+	wantPod := desired.Spec.Template.Spec
+	if !equality.Semantic.DeepEqual(pod.NodeSelector, wantPod.NodeSelector) {
+		pod.NodeSelector = wantPod.NodeSelector
+		changed = true
+	}
+	if !equality.Semantic.DeepEqual(pod.Tolerations, wantPod.Tolerations) {
+		pod.Tolerations = wantPod.Tolerations
+		changed = true
+	}
+	if !equality.Semantic.DeepEqual(pod.Affinity, wantPod.Affinity) {
+		pod.Affinity = wantPod.Affinity
+		changed = true
+	}
+	return changed
 }
 
 // buildInitContainers builds the init containers for the pod

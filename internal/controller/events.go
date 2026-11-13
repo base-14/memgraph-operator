@@ -13,6 +13,7 @@ const (
 	EventReasonCreatingStatefulSet = "CreatingStatefulSet"
 	EventReasonScalingStatefulSet  = "ScalingStatefulSet"
 	EventReasonUpdatingImage       = "UpdatingImage"
+	EventReasonUpdatingConfig      = "UpdatingConfig"
 
 	// Replication events
 	EventReasonMainInstanceConfigured = "MainInstanceConfigured"
@@ -30,6 +31,7 @@ const (
 	EventReasonFailoverStarted    = "FailoverStarted"
 	EventReasonFailoverCompleted  = "FailoverCompleted"
 	EventReasonFailoverFailed     = "FailoverFailed"
+	EventReasonWaitingForMain     = "WaitingForMain"
 
 	// Snapshot events
 	EventReasonSnapshotCronJobCreated = "SnapshotCronJobCreated"
