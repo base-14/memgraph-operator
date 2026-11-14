@@ -617,6 +617,9 @@ func (r *MemgraphClusterReconciler) updateStatus(ctx context.Context, cluster *m
 
 	// Update conditions
 	r.updateConditions(cluster, writeInstance, readyCount, replicas, registeredReplicas, healthyReplicas)
+	if setMemoryLimitCondition(cluster) && r.Recorder != nil {
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, EventReasonMemoryLimitAbovePodLimit, memoryLimitWarning(checkMemoryLimit(cluster)))
+	}
 
 	return r.Status().Update(ctx, cluster)
 }

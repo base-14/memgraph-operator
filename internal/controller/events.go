@@ -57,4 +57,6 @@ const (
 
 	// Reconcile events
 	EventReasonReconcileError = "ReconcileError"
+
+	EventReasonMemoryLimitAbovePodLimit = "MemoryLimitAbovePodLimit"
 )

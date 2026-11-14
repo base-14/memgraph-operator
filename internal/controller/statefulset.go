@@ -165,10 +165,7 @@ func buildMemgraphArgs(cluster *memgraphv1alpha1.MemgraphCluster) []string {
 		logLevel = defaultLogLevel
 	}
 
-	memoryLimit := cluster.Spec.Config.MemoryLimit
-	if memoryLimit == 0 {
-		memoryLimit = defaultMemoryLimit
-	}
+	memoryLimit := effectiveMemoryLimitMB(cluster)
 
 	walFlushEveryNTx := cluster.Spec.Config.WALFlushEveryNTx
 	if walFlushEveryNTx == 0 {

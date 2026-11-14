@@ -38,6 +38,7 @@ func TestEventReasonConstants(t *testing.T) {
 		{"EventReasonSnapshotCronJobCreated", EventReasonSnapshotCronJobCreated},
 		{"EventReasonSnapshotCronJobUpdated", EventReasonSnapshotCronJobUpdated},
 		{"EventReasonSnapshotSucceeded", EventReasonSnapshotSucceeded},
+		{"EventReasonMemoryLimitAbovePodLimit", EventReasonMemoryLimitAbovePodLimit},
 		{"EventReasonSnapshotFailed", EventReasonSnapshotFailed},
 		{"EventReasonS3BackupSucceeded", EventReasonS3BackupSucceeded},
 		{"EventReasonS3BackupFailed", EventReasonS3BackupFailed},

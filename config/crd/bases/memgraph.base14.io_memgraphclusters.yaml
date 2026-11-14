@@ -995,7 +995,6 @@ spec:
                     - ERROR
                     type: string
                   memoryLimit:
-                    default: 3000
                     description: MemoryLimit sets the memory limit in MB for Memgraph
                     format: int32
                     type: integer

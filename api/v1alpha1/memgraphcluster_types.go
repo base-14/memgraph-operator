@@ -124,7 +124,6 @@ type MemgraphConfig struct {
 	LogLevel string `json:"logLevel,omitempty"`
 
 	// MemoryLimit sets the memory limit in MB for Memgraph
-	// +kubebuilder:default=3000
 	// +optional
 	MemoryLimit int32 `json:"memoryLimit,omitempty"`
 
@@ -413,6 +412,8 @@ const (
 
 	// ConditionTypeReplicationLagAcceptable indicates replication lag is within threshold
 	ConditionTypeReplicationLagAcceptable = "ReplicationLagAcceptable"
+
+	ConditionTypeMemoryLimitWithinPodLimit = "MemoryLimitWithinPodLimit"
 )
 
 // +kubebuilder:object:root=true
