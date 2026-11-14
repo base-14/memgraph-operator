@@ -25,6 +25,11 @@ const (
 	EventReasonReplicaInvalid         = "ReplicaInvalid"
 	EventReasonReplicaBehindTooLong   = "ReplicaBehindTooLong"
 	EventReasonReplicationLagHigh     = "ReplicationLagHigh"
+	EventReasonReplicaStuckRecovery   = "ReplicaStuckRecovery"
+	EventReasonReplicaDiverged        = "ReplicaDiverged"
+	EventReasonReplicaReseeding       = "ReplicaReseeding"
+	EventReasonReplicaReseedSkipped   = "ReplicaReseedSkipped"
+	EventReasonReplicaReseedFailed    = "ReplicaReseedFailed"
 
 	// Failover events
 	EventReasonMainInstanceFailed = "MainInstanceFailed"

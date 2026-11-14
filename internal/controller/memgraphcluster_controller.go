@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,6 +46,7 @@ type MemgraphClusterReconciler struct {
 	client.Client
 	Scheme             *runtime.Scheme
 	Recorder           record.EventRecorder
+	ReseedRecorder     record.EventRecorder
 	Config             *rest.Config
 	Log                *zap.Logger
 	replicationManager *ReplicationManager
@@ -56,7 +58,8 @@ type MemgraphClusterReconciler struct {
 // +kubebuilder:rbac:groups=memgraph.base14.io,resources=memgraphclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;patch;delete
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
@@ -219,15 +222,11 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 		return ctrl.Result{}, err
 	}
 
-	// 6. Reconcile read service
-	if err := r.reconcileReadService(ctx, cluster, log); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	// 7. Configure replication if we have a write instance and pods are ready
 	var registeredReplicas int32
 	var healthyReplicas int32
 	var replicationError error
+	healthKnown := writeInstance != "" && len(pods) == 1
 	if writeInstance != "" && len(pods) > 1 {
 		if err := r.ensureReplicationManager(); err != nil {
 			log.Error("failed to create replication manager", zap.Error(err))
@@ -243,10 +242,25 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 				if err == nil && health != nil {
 					registeredReplicas = health.TotalReplicas
 					healthyReplicas = health.HealthyReplicas
+					healthKnown = true
 					r.metrics.RecordReplicaSet(cluster.Name, cluster.Namespace, replicaInfos)
+					r.reconcileReseed(ctx, cluster, pods, writeInstance, log)
 				}
 			}
 		}
+	}
+
+	var healthByPod map[string]bool
+	if healthKnown && r.replicationManager != nil {
+		healthByPod = r.replicationManager.ReplicaHealthByPod(cluster)
+	}
+	if err := r.applyServeReads(ctx, pods, desiredServeReads(pods, writeInstance, healthByPod, healthKnown)); err != nil {
+		log.Error("failed to update serve-reads labels", zap.Error(err))
+	}
+
+	// 6. Reconcile read service
+	if err := r.reconcileReadService(ctx, cluster, log); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// 8. Reconcile snapshot CronJob. Called unconditionally: the function itself
@@ -263,7 +277,12 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 
 	// 10. Run validation tests (only when cluster is running)
 	if cluster.Status.Phase == memgraphv1alpha1.ClusterPhaseRunning {
-		if err := r.reconcileValidation(ctx, cluster, pods, writeInstance, log); err != nil {
+		desiredReplicas := cluster.Spec.Replicas
+		if desiredReplicas == 0 {
+			desiredReplicas = 3
+		}
+		streaming := replicationStreamingHealthy(desiredReplicas, registeredReplicas, healthyReplicas)
+		if err := r.reconcileValidation(ctx, cluster, pods, writeInstance, streaming, log); err != nil {
 			log.Error("validation failed", zap.Error(err))
 		}
 	}
@@ -457,6 +476,14 @@ func (r *MemgraphClusterReconciler) reconcileReadService(ctx context.Context, cl
 		return err
 	}
 
+	if !equality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
+		log.Info("updating read service selector",
+			zap.String("service", existing.Name),
+			zap.Any("selector", desired.Spec.Selector))
+		existing.Spec.Selector = desired.Spec.Selector
+		return r.Update(ctx, existing)
+	}
+
 	return nil
 }
 
@@ -623,8 +650,7 @@ func (r *MemgraphClusterReconciler) updateConditions(cluster *memgraphv1alpha1.M
 	// heartbeating while streaming no data (empty data_info). Require every
 	// registered replica to be actively streaming as well.
 	expectedReplicas := replicas - 1 // excluding main
-	replicationHealthy := registeredReplicas >= expectedReplicas && expectedReplicas >= 0 &&
-		healthyReplicas >= registeredReplicas
+	replicationHealthy := replicationStreamingHealthy(replicas, registeredReplicas, healthyReplicas)
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 		Type:               memgraphv1alpha1.ConditionTypeReplicationHealthy,
 		Status:             conditionStatus(replicationHealthy),

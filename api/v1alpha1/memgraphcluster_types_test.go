@@ -795,3 +795,13 @@ func TestSnapshotSpecEnabledFalseSurvivesMarshal(t *testing.T) {
 		t.Errorf("enabled:false was dropped on marshal: %s", out)
 	}
 }
+
+func TestValidationStatusAllReplicasHealthyFalseSurvivesMarshal(t *testing.T) {
+	out, err := json.Marshal(ValidationStatus{AllReplicasHealthy: false})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"allReplicasHealthy":false`) {
+		t.Errorf("allReplicasHealthy:false was dropped on marshal: %s", out)
+	}
+}

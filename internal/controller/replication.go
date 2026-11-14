@@ -29,6 +29,7 @@ type ReplicationManager struct {
 	// reset on operator restart.
 	statesMu sync.Mutex
 	states   map[string]map[string]*replicaState
+	observed map[string]map[string]replicaObservation
 
 	// now is the clock used for classification. Overridable in tests.
 	now func() time.Time
@@ -40,8 +41,49 @@ func NewReplicationManager(client *memgraph.Client, recorder record.EventRecorde
 		client:   client,
 		recorder: recorder,
 		states:   make(map[string]map[string]*replicaState),
+		observed: make(map[string]map[string]replicaObservation),
 		now:      time.Now,
 	}
+}
+
+type replicaObservation struct {
+	healthy bool
+	reseed  bool
+}
+
+func (rm *ReplicationManager) ReplicaHealthByPod(cluster *memgraphv1alpha1.MemgraphCluster) map[string]bool {
+	rm.statesMu.Lock()
+	defer rm.statesMu.Unlock()
+	out := make(map[string]bool)
+	for name, obs := range rm.observed[cluster.Namespace+"/"+cluster.Name] {
+		out[strings.ReplaceAll(name, "_", "-")] = obs.healthy
+	}
+	return out
+}
+
+func (rm *ReplicationManager) ReseedCandidates(cluster *memgraphv1alpha1.MemgraphCluster) []string {
+	rm.statesMu.Lock()
+	defer rm.statesMu.Unlock()
+	var out []string
+	for name, obs := range rm.observed[cluster.Namespace+"/"+cluster.Name] {
+		if obs.reseed {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (rm *ReplicationManager) ResetReplica(cluster *memgraphv1alpha1.MemgraphCluster, replicaName string) {
+	rm.statesMu.Lock()
+	defer rm.statesMu.Unlock()
+	key := cluster.Namespace + "/" + cluster.Name
+	delete(rm.states[key], replicaName)
+	delete(rm.observed[key], replicaName)
+}
+
+func (rm *ReplicationManager) DropReplica(ctx context.Context, namespace, mainPod, replicaName string) error {
+	return rm.client.UnregisterReplica(ctx, namespace, mainPod, replicaName)
 }
 
 // SetMetricsRecorder wires the metrics recorder. Safe to call once at startup.
@@ -92,6 +134,7 @@ func (rm *ReplicationManager) DeleteClusterState(clusterName, namespace string) 
 	rm.statesMu.Lock()
 	defer rm.statesMu.Unlock()
 
+	delete(rm.observed, clusterKey)
 	byReplica, ok := rm.states[clusterKey]
 	if !ok {
 		return
@@ -295,6 +338,7 @@ func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluste
 		behindThreshold = t.Duration
 	}
 
+	frozenAfter := reseedAfter(cluster)
 	now := rm.now()
 	clusterKey := cluster.Namespace + "/" + cluster.Name
 
@@ -308,13 +352,20 @@ func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluste
 	rm.statesMu.Lock()
 	defer rm.statesMu.Unlock()
 
+	observations := make(map[string]replicaObservation, len(replicas))
+	rm.observed[clusterKey] = observations
+
 	for _, replica := range replicas {
 		observed[replica.Name] = struct{}{}
 		st := rm.stateFor(clusterKey, replica.Name)
 
-		class := classifyReplica(replica, st, now, behindThreshold)
+		class := classifyReplica(replica, st, now, behindThreshold, frozenAfter)
 		if class.isHealthy() {
 			health.HealthyReplicas++
+		}
+		observations[replica.Name] = replicaObservation{
+			healthy: class.isHealthy(),
+			reseed:  shouldReseed(class, st, now, frozenAfter),
 		}
 
 		// Stateful per-replica metrics (additive to the snapshot gauges
@@ -347,7 +398,21 @@ func (rm *ReplicationManager) CheckReplicationHealth(ctx context.Context, cluste
 				zap.String("replica", replica.Name),
 				zap.Any("dataInfo", replica.DataInfo))
 			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaInvalid,
-				fmt.Sprintf("Replica %s reports invalid status. Manual intervention required (drop + re-register).", replica.Name))
+				fmt.Sprintf("Replica %s reports invalid status for %s. It is re-seeded after %s when autoReseed is on.",
+					replica.Name, now.Sub(st.invalidSince).Round(time.Second), frozenAfter))
+		case classificationStuckRecovery:
+			log.Warn("replica stuck in recovery",
+				zap.String("replica", replica.Name),
+				zap.Duration("recoveringFor", now.Sub(st.recoverySince)))
+			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaStuckRecovery,
+				fmt.Sprintf("Replica %s has been in recovery for %s.", replica.Name, now.Sub(st.recoverySince).Round(time.Second)))
+		case classificationDiverged:
+			log.Warn("replica diverged from main",
+				zap.String("replica", replica.Name),
+				zap.Any("dataInfo", replica.DataInfo))
+			rm.recorder.Event(cluster, corev1.EventTypeWarning, EventReasonReplicaDiverged,
+				fmt.Sprintf("Replica %s is ahead of main (negative behind) for %s: histories have diverged.",
+					replica.Name, now.Sub(st.divergedSince).Round(time.Second)))
 		case classificationBehindTooLong:
 			log.Warn("replica behind for too long",
 				zap.String("replica", replica.Name),

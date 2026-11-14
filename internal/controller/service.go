@@ -110,9 +110,8 @@ func buildWriteService(cluster *memgraphv1alpha1.MemgraphCluster, writeInstanceN
 func buildReadService(cluster *memgraphv1alpha1.MemgraphCluster) *corev1.Service {
 	labels := labelsForCluster(cluster)
 
-	// Initially selects all pods; we'll use an annotation or label to mark read pods
-	// For now, this selects all pods - reads should work on any pod
 	selector := labelsForCluster(cluster)
+	selector[serveReadsLabel] = serveReadsYes
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{

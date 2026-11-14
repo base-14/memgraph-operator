@@ -190,11 +190,12 @@ func main() {
 	}
 
 	if err := (&controller.MemgraphClusterReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("memgraph-operator"),
-		Config:   mgr.GetConfig(),
-		Log:      zapLog.Named("controller"),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		Recorder:       mgr.GetEventRecorderFor("memgraph-operator"),
+		ReseedRecorder: mgr.GetEventRecorderFor("memgraph-operator-reseed"),
+		Config:         mgr.GetConfig(),
+		Log:            zapLog.Named("controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Fatal("unable to create controller",
 			zap.String("controller", "MemgraphCluster"),

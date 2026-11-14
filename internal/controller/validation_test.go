@@ -15,47 +15,6 @@ const (
 	roleReplica = "REPLICA"
 )
 
-func TestParseTimestamp(t *testing.T) {
-	tests := []struct {
-		name     string
-		output   string
-		expected int64
-	}{
-		{
-			name:     "Empty output",
-			output:   "",
-			expected: 0,
-		},
-		{
-			name: "Valid timestamp in pipe format",
-			output: `+---------------+
-| ts            |
-+---------------+
-| 1733152800000 |
-+---------------+`,
-			expected: 1733152800000,
-		},
-		{
-			name: "No timestamp",
-			output: `+-------+
-| value |
-+-------+
-| test  |
-+-------+`,
-			expected: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parseTimestamp(tt.output)
-			if result != tt.expected {
-				t.Errorf("parseTimestamp() = %d, want %d", result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestValidationManager_UpdateValidationStatus(t *testing.T) {
 	vm := &ValidationManager{}
 
@@ -187,45 +146,6 @@ func TestValidationManager_UpdateValidationStatus_EmptyResult(t *testing.T) {
 	}
 }
 
-func TestParseTimestampVariants(t *testing.T) {
-	tests := []struct {
-		name     string
-		output   string
-		expected int64
-	}{
-		{
-			name: "whitespace around value",
-			output: `+---------------+
-| ts            |
-+---------------+
-|   1733152800  |
-+---------------+`,
-			expected: 1733152800,
-		},
-		{
-			name:     "just a number",
-			output:   "1733152800000",
-			expected: 0, // Not in expected format
-		},
-		{
-			name: "header only",
-			output: `+---------------+
-| ts            |
-+---------------+`,
-			expected: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parseTimestamp(tt.output)
-			if result != tt.expected {
-				t.Errorf("parseTimestamp() = %d, want %d", result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestNewValidationManager(t *testing.T) {
 	vm := NewValidationManager(nil)
 	if vm == nil {
@@ -298,56 +218,6 @@ func TestInstanceValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.iv.Healthy != tt.expected {
 				t.Errorf("Healthy = %v, want %v", tt.iv.Healthy, tt.expected)
-			}
-		})
-	}
-}
-
-func TestParseTimestampWithComplexOutput(t *testing.T) {
-	tests := []struct {
-		name     string
-		output   string
-		expected int64
-	}{
-		{
-			name: "multiple columns",
-			output: `+--------+---------------+
-| value  | ts            |
-+--------+---------------+
-| test   | 1733152800000 |
-+--------+---------------+`,
-			expected: 1733152800000,
-		},
-		{
-			name: "single value",
-			output: `+---------------+
-| ts            |
-+---------------+
-| 9999999999999 |
-+---------------+`,
-			expected: 9999999999999,
-		},
-		{
-			name:     "empty pipes",
-			output:   "| | |",
-			expected: 0,
-		},
-		{
-			name: "negative number",
-			output: `+------+
-| ts   |
-+------+
-| -100 |
-+------+`,
-			expected: 0, // Negative should be ignored
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parseTimestamp(tt.output)
-			if result != tt.expected {
-				t.Errorf("parseTimestamp() = %d, want %d", result, tt.expected)
 			}
 		})
 	}

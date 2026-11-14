@@ -174,6 +174,15 @@ type ReplicationSpec struct {
 	// +kubebuilder:validation:XValidation:rule=`!self.startsWith("-") && self != "0s"`,message="behindAlertThreshold must be a positive Go duration (e.g. '5m', '30s'); zero and negative values are not allowed"
 	// +optional
 	BehindAlertThreshold *metav1.Duration `json:"behindAlertThreshold,omitempty"`
+
+	// +kubebuilder:default=true
+	// +optional
+	AutoReseed *bool `json:"autoReseed,omitempty"`
+
+	// +kubebuilder:default="5m"
+	// +kubebuilder:validation:XValidation:rule=`!self.startsWith("-") && self != "0s"`,message="reseedAfter must be a positive Go duration (e.g. '5m')"
+	// +optional
+	ReseedAfter *metav1.Duration `json:"reseedAfter,omitempty"`
 }
 
 // HighAvailabilitySpec defines automatic promotion/failover settings
@@ -352,7 +361,7 @@ type ValidationStatus struct {
 
 	// AllReplicasHealthy indicates if all replicas passed health checks
 	// +optional
-	AllReplicasHealthy bool `json:"allReplicasHealthy,omitempty"`
+	AllReplicasHealthy bool `json:"allReplicasHealthy"`
 
 	// Instances contains per-instance validation status
 	// +optional

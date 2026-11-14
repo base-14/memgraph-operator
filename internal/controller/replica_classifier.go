@@ -21,6 +21,8 @@ const (
 	classificationInvalid                                      // any DB status == "invalid"
 	classificationUnknownStatus                                // any DB status not in known set
 	classificationBehindTooLong                                // behind > 0 longer than behindAlertThreshold
+	classificationStuckRecovery
+	classificationDiverged
 )
 
 // channelDownGracePeriod is how long an empty data_info must persist before
@@ -44,6 +46,26 @@ func (c replicaClassification) isHealthy() bool {
 type replicaState struct {
 	behindSince      time.Time // when did the replica first have behind > 0 without recovery
 	channelDownSince time.Time // when did the replica first have empty data_info
+	recoverySince    time.Time
+	divergedSince    time.Time
+	invalidSince     time.Time
+}
+
+func shouldReseed(class replicaClassification, state *replicaState, now time.Time, after time.Duration) bool {
+	var since time.Time
+	switch class {
+	case classificationDataChannelDown:
+		since = state.channelDownSince
+	case classificationInvalid:
+		since = state.invalidSince
+	case classificationStuckRecovery:
+		since = state.recoverySince
+	case classificationDiverged:
+		since = state.divergedSince
+	default:
+		return false
+	}
+	return !since.IsZero() && now.Sub(since) >= after
 }
 
 // classifyReplica evaluates one replica against per-replica state.
@@ -62,7 +84,7 @@ type replicaState struct {
 //
 // Negative Behind values are ignored entirely (they indicate replica-side
 // divergence, which is a separate concern parked for a follow-up).
-func classifyReplica(replica memgraph.ReplicaInfo, state *replicaState, now time.Time, behindThreshold time.Duration) replicaClassification {
+func classifyReplica(replica memgraph.ReplicaInfo, state *replicaState, now time.Time, behindThreshold, frozenAfter time.Duration) replicaClassification {
 	if len(replica.DataInfo) == 0 {
 		if state.channelDownSince.IsZero() {
 			state.channelDownSince = now
@@ -70,6 +92,9 @@ func classifyReplica(replica memgraph.ReplicaInfo, state *replicaState, now time
 		// Channel is down → lag is undefined; clear the behind timer so the
 		// memgraph_replica_behind_seconds gauge does not keep growing.
 		state.behindSince = time.Time{}
+		state.recoverySince = time.Time{}
+		state.divergedSince = time.Time{}
+		state.invalidSince = time.Time{}
 		if now.Sub(state.channelDownSince) > channelDownGracePeriod {
 			return classificationDataChannelDown
 		}
@@ -80,19 +105,30 @@ func classifyReplica(replica memgraph.ReplicaInfo, state *replicaState, now time
 	// First pass: check for terminal "invalid" status without mutating state.
 	for _, db := range replica.DataInfo {
 		if dbStatus(db) == memgraph.ReplicaStatusInvalid {
+			if state.invalidSince.IsZero() {
+				state.invalidSince = now
+			}
 			return classificationInvalid
 		}
 	}
+	state.invalidSince = time.Time{}
 
 	worst := classificationHealthy
 	anyBehind := false
+	anyRecovery := false
+	anyDiverged := false
 
 	for _, db := range replica.DataInfo {
 		switch dbStatus(db) {
-		case memgraph.ReplicaStatusReady, memgraph.ReplicaStatusRecovery, memgraph.ReplicaStatusReplicating:
-			// known good
+		case memgraph.ReplicaStatusRecovery:
+			anyRecovery = true
+		case memgraph.ReplicaStatusReady, memgraph.ReplicaStatusReplicating:
 		default:
 			worst = classificationUnknownStatus
+		}
+
+		if db.Behind < 0 {
+			anyDiverged = true
 		}
 
 		if db.Behind > 0 {
@@ -111,6 +147,28 @@ func classifyReplica(replica memgraph.ReplicaInfo, state *replicaState, now time
 
 	if !anyBehind {
 		state.behindSince = time.Time{}
+	}
+
+	if anyDiverged {
+		if state.divergedSince.IsZero() {
+			state.divergedSince = now
+		}
+		if now.Sub(state.divergedSince) > frozenAfter {
+			return classificationDiverged
+		}
+	} else {
+		state.divergedSince = time.Time{}
+	}
+
+	if anyRecovery {
+		if state.recoverySince.IsZero() {
+			state.recoverySince = now
+		}
+		if now.Sub(state.recoverySince) > frozenAfter {
+			return classificationStuckRecovery
+		}
+	} else {
+		state.recoverySince = time.Time{}
 	}
 
 	return worst

@@ -1067,6 +1067,9 @@ spec:
               replication:
                 description: Replication defines the replication settings
                 properties:
+                  autoReseed:
+                    default: true
+                    type: boolean
                   behindAlertThreshold:
                     default: 5m
                     description: |-
@@ -1088,6 +1091,12 @@ spec:
                     - SYNC
                     - STRICT_SYNC
                     type: string
+                  reseedAfter:
+                    default: 5m
+                    type: string
+                    x-kubernetes-validations:
+                    - message: reseedAfter must be a positive Go duration (e.g. '5m')
+                      rule: '!self.startsWith("-") && self != "0s"'
                 type: object
               resources:
                 description: Resources defines the compute resources for all instances

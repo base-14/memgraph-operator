@@ -5,8 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -47,10 +45,10 @@ type InstanceValidation struct {
 }
 
 // RunValidation runs all validation tests for the cluster
-func (vm *ValidationManager) RunValidation(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, log *zap.Logger) (*ValidationResult, error) {
+func (vm *ValidationManager) RunValidation(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, replicationStreaming bool, healthByPod map[string]bool) (*ValidationResult, error) {
 	result := &ValidationResult{
 		ConnectivityPassed: true,
-		ReplicationPassed:  true,
+		ReplicationPassed:  replicationStreaming,
 	}
 
 	// Test connectivity to each instance
@@ -79,120 +77,15 @@ func (vm *ValidationManager) RunValidation(ctx context.Context, cluster *memgrap
 		} else {
 			iv.Healthy = true
 		}
+		if pod.Name != writeInstance && healthByPod != nil && !healthByPod[pod.Name] {
+			iv.Healthy = false
+			iv.Error = "replica is not streaming from main"
+		}
 
 		result.InstanceResults = append(result.InstanceResults, iv)
 	}
 
-	// If we have a write instance and replicas, test replication
-	if writeInstance != "" && len(pods) > 1 {
-		lagMs, err := vm.testReplicationLag(ctx, cluster, pods, writeInstance, log)
-		if err != nil {
-			log.Error("failed to test replication lag", zap.Error(err))
-			result.ReplicationPassed = false
-		} else {
-			result.ReplicationLagMs = lagMs
-			// Consider replication unhealthy if lag > 10 seconds
-			if lagMs > 10000 {
-				result.ReplicationPassed = false
-			}
-		}
-	}
-
 	return result, nil
-}
-
-// testReplicationLag tests replication by writing to main and reading from replicas
-func (vm *ValidationManager) testReplicationLag(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, log *zap.Logger) (int64, error) {
-	// Create a unique test value
-	testValue := fmt.Sprintf("validation_%d", time.Now().UnixNano())
-
-	// Write to main
-	writeQuery := fmt.Sprintf(`
-		MERGE (n:__ValidationTest {id: 'replication_test'})
-		SET n.value = '%s', n.timestamp = timestamp()
-		RETURN n.timestamp AS ts
-	`, testValue)
-
-	startTime := time.Now()
-	output, err := vm.client.ExecuteQuery(ctx, cluster.Namespace, writeInstance, writeQuery)
-	if err != nil {
-		return 0, fmt.Errorf("failed to write test value: %w", err)
-	}
-
-	// Parse the timestamp from output
-	writeTimestamp := parseTimestamp(output)
-	if writeTimestamp == 0 {
-		writeTimestamp = time.Now().UnixMilli()
-	}
-
-	// Wait a bit for replication
-	time.Sleep(100 * time.Millisecond)
-
-	// Check each replica
-	var maxLag int64
-	for _, pod := range pods {
-		if pod.Name == writeInstance || !isPodReady(&pod) {
-			continue
-		}
-
-		// Read from replica
-		readQuery := `MATCH (n:__ValidationTest {id: 'replication_test'}) RETURN n.value AS value, n.timestamp AS ts`
-		output, err := vm.client.ExecuteQuery(ctx, cluster.Namespace, pod.Name, readQuery)
-		if err != nil {
-			log.Error("failed to read from replica",
-				zap.String("replica", pod.Name),
-				zap.Error(err))
-			continue
-		}
-
-		// Check if value is replicated
-		if !strings.Contains(output, testValue) {
-			// Value not replicated yet, calculate lag
-			lag := time.Since(startTime).Milliseconds()
-			if lag > maxLag {
-				maxLag = lag
-			}
-		} else {
-			// Value replicated, try to get actual lag
-			readTimestamp := parseTimestamp(output)
-			if readTimestamp > 0 && writeTimestamp > 0 {
-				lag := readTimestamp - writeTimestamp
-				if lag > maxLag {
-					maxLag = lag
-				}
-			}
-		}
-	}
-
-	// Cleanup test node (best effort)
-	cleanupQuery := `MATCH (n:__ValidationTest {id: 'replication_test'}) DETACH DELETE n`
-	_, _ = vm.client.ExecuteQuery(ctx, cluster.Namespace, writeInstance, cleanupQuery)
-
-	return maxLag, nil
-}
-
-// parseTimestamp extracts a timestamp from query output
-func parseTimestamp(output string) int64 {
-	// Look for a numeric timestamp in the output
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		// Skip header lines and separators
-		if line == "" || strings.HasPrefix(line, "+") || strings.HasPrefix(line, "|") && strings.Contains(line, "ts") {
-			continue
-		}
-		// Try to extract number from pipe-separated output
-		if strings.HasPrefix(line, "|") {
-			parts := strings.Split(line, "|")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if ts, err := strconv.ParseInt(part, 10, 64); err == nil && ts > 0 {
-					return ts
-				}
-			}
-		}
-	}
-	return 0
 }
 
 // UpdateValidationStatus updates the cluster status with validation results
@@ -223,7 +116,7 @@ func (vm *ValidationManager) UpdateValidationStatus(cluster *memgraphv1alpha1.Me
 }
 
 // reconcileValidation runs validation tests periodically
-func (r *MemgraphClusterReconciler) reconcileValidation(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, log *zap.Logger) error {
+func (r *MemgraphClusterReconciler) reconcileValidation(ctx context.Context, cluster *memgraphv1alpha1.MemgraphCluster, pods []corev1.Pod, writeInstance string, replicationStreaming bool, log *zap.Logger) error {
 	// Only run validation when cluster is running
 	if cluster.Status.Phase != memgraphv1alpha1.ClusterPhaseRunning {
 		return nil
@@ -242,7 +135,7 @@ func (r *MemgraphClusterReconciler) reconcileValidation(ctx context.Context, clu
 	}
 
 	vm := NewValidationManager(r.replicationManager.client)
-	result, err := vm.RunValidation(ctx, cluster, pods, writeInstance, log)
+	result, err := vm.RunValidation(ctx, cluster, pods, writeInstance, replicationStreaming, r.replicationManager.ReplicaHealthByPod(cluster))
 	if err != nil {
 		log.Error("validation failed", zap.Error(err))
 		return err
