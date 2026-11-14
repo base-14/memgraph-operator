@@ -49,6 +49,27 @@ type replicaState struct {
 	recoverySince    time.Time
 	divergedSince    time.Time
 	invalidSince     time.Time
+	lastTs           int64
+}
+
+func replicaTimestamp(replica memgraph.ReplicaInfo) int64 {
+	ts := replica.Timestamp
+	for _, db := range replica.DataInfo {
+		if db.Timestamp > ts {
+			ts = db.Timestamp
+		}
+	}
+	return ts
+}
+
+func (s *replicaState) noteProgress(ts int64) {
+	if ts == s.lastTs {
+		return
+	}
+	s.lastTs = ts
+	s.recoverySince = time.Time{}
+	s.divergedSince = time.Time{}
+	s.invalidSince = time.Time{}
 }
 
 func shouldReseed(class replicaClassification, state *replicaState, now time.Time, after time.Duration) bool {
@@ -101,6 +122,7 @@ func classifyReplica(replica memgraph.ReplicaInfo, state *replicaState, now time
 		return classificationTransient
 	}
 	state.channelDownSince = time.Time{}
+	state.noteProgress(replicaTimestamp(replica))
 
 	// First pass: check for terminal "invalid" status without mutating state.
 	for _, db := range replica.DataInfo {

@@ -291,7 +291,7 @@ func TestClassifyReplicaFrozen(t *testing.T) {
 	})
 
 	t.Run("recovery longer than frozenAfter is stuck", func(t *testing.T) {
-		st := &replicaState{recoverySince: base}
+		st := &replicaState{recoverySince: base, lastTs: 1}
 		if got := classifyReplica(replica("recovery", 0), st, base.Add(frozenAfter+time.Second), behindThreshold, frozenAfter); got != classificationStuckRecovery {
 			t.Errorf("got %v, want stuck recovery", got)
 		}
@@ -318,7 +318,7 @@ func TestClassifyReplicaFrozen(t *testing.T) {
 	})
 
 	t.Run("negative behind longer than frozenAfter is diverged", func(t *testing.T) {
-		st := &replicaState{divergedSince: base}
+		st := &replicaState{divergedSince: base, lastTs: 1}
 		if got := classifyReplica(replica("ready", -24), st, base.Add(frozenAfter+time.Second), behindThreshold, frozenAfter); got != classificationDiverged {
 			t.Errorf("got %v, want diverged", got)
 		}
