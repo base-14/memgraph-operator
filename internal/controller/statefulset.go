@@ -219,6 +219,19 @@ func memgraphFlagName(arg string) string {
 	return name
 }
 
+func initContainersDiffer(current, want []corev1.Container) bool {
+	if len(current) != len(want) {
+		return true
+	}
+	for i := range want {
+		if current[i].Name != want[i].Name || current[i].Image != want[i].Image ||
+			!equality.Semantic.DeepEqual(current[i].Command, want[i].Command) {
+			return true
+		}
+	}
+	return false
+}
+
 func applyStatefulSetPodSpecDrift(existing, desired *appsv1.StatefulSet) bool {
 	current := &existing.Spec.Template.Spec.Containers[0]
 	want := desired.Spec.Template.Spec.Containers[0]
@@ -239,6 +252,10 @@ func applyStatefulSetPodSpecDrift(existing, desired *appsv1.StatefulSet) bool {
 
 	pod := &existing.Spec.Template.Spec
 	wantPod := desired.Spec.Template.Spec
+	if initContainersDiffer(pod.InitContainers, wantPod.InitContainers) {
+		pod.InitContainers = wantPod.InitContainers
+		changed = true
+	}
 	if !equality.Semantic.DeepEqual(pod.NodeSelector, wantPod.NodeSelector) {
 		pod.NodeSelector = wantPod.NodeSelector
 		changed = true
@@ -273,35 +290,6 @@ func buildInitContainers() []corev1.Container {
 			SecurityContext: &corev1.SecurityContext{
 				Privileged: &privileged,
 				RunAsUser:  &runAsRoot,
-			},
-		},
-		// Clear replication state to prevent startup failures when replicas change.
-		// Memgraph stores replication config and tries to reconnect on startup,
-		// which fails if previously registered replicas no longer exist.
-		// Graph data is preserved - only replication state is cleared.
-		// The operator will re-establish replication after pods are healthy.
-		{
-			Name:            "clear-replication-state",
-			Image:           "busybox:1.36",
-			ImagePullPolicy: corev1.PullIfNotPresent,
-			Command: []string{
-				"sh",
-				"-c",
-				fmt.Sprintf(`echo "Clearing Memgraph replication state..."
-rm -rf %s/.internal/replication 2>/dev/null || true
-rm -f %s/.internal/replication_* 2>/dev/null || true
-rm -f %s/.internal/epoch_id 2>/dev/null || true
-echo "Replication state cleared. Operator will reconfigure after startup."`,
-					dataVolumePath, dataVolumePath, dataVolumePath),
-			},
-			SecurityContext: &corev1.SecurityContext{
-				RunAsUser: &runAsRoot,
-			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      dataVolumeName,
-					MountPath: dataVolumePath,
-				},
 			},
 		},
 		// Volume permissions init container

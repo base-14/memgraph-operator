@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -116,9 +117,8 @@ func TestBuildStatefulSet(t *testing.T) {
 				t.Errorf("Image = %s, want %s", sts.Spec.Template.Spec.Containers[0].Image, tt.expectedImage)
 			}
 
-			// Verify init containers exist (sysctl-init, clear-replication-state, volume-permissions)
-			if len(sts.Spec.Template.Spec.InitContainers) != 3 {
-				t.Errorf("InitContainers count = %d, want 3", len(sts.Spec.Template.Spec.InitContainers))
+			if len(sts.Spec.Template.Spec.InitContainers) != 2 {
+				t.Errorf("InitContainers count = %d, want 2 (sysctl-init, volume-permissions)", len(sts.Spec.Template.Spec.InitContainers))
 			}
 
 			// Verify ports
@@ -333,11 +333,10 @@ func TestBuildMemgraphArgsSnapshotFlags(t *testing.T) {
 func TestBuildInitContainers(t *testing.T) {
 	initContainers := buildInitContainers()
 
-	if len(initContainers) != 3 {
-		t.Fatalf("InitContainers count = %d, want 3", len(initContainers))
+	if len(initContainers) != 2 {
+		t.Fatalf("InitContainers count = %d, want 2", len(initContainers))
 	}
 
-	// Verify sysctl init container
 	sysctlInit := initContainers[0]
 	if sysctlInit.Name != "sysctl-init" {
 		t.Errorf("First init container name = %s, want sysctl-init", sysctlInit.Name)
@@ -346,19 +345,19 @@ func TestBuildInitContainers(t *testing.T) {
 		t.Error("sysctl-init should be privileged")
 	}
 
-	// Verify clear-replication-state init container
-	clearReplInit := initContainers[1]
-	if clearReplInit.Name != "clear-replication-state" {
-		t.Errorf("Second init container name = %s, want clear-replication-state", clearReplInit.Name)
-	}
-	if len(clearReplInit.VolumeMounts) != 1 {
-		t.Errorf("clear-replication-state VolumeMounts count = %d, want 1", len(clearReplInit.VolumeMounts))
+	for _, c := range initContainers {
+		if c.Name == "clear-replication-state" {
+			t.Fatal("clear-replication-state must not run: wiping the role and epoch_id makes a restarted replica boot as a main and diverge")
+		}
+		script := strings.Join(c.Command, " ")
+		if strings.Contains(script, ".internal/replication") || strings.Contains(script, "epoch_id") {
+			t.Fatalf("init container %s touches replication state: %s", c.Name, script)
+		}
 	}
 
-	// Verify volume permissions init container
-	volPermsInit := initContainers[2]
+	volPermsInit := initContainers[1]
 	if volPermsInit.Name != "volume-permissions" {
-		t.Errorf("Third init container name = %s, want volume-permissions", volPermsInit.Name)
+		t.Errorf("Second init container name = %s, want volume-permissions", volPermsInit.Name)
 	}
 	if len(volPermsInit.VolumeMounts) != 1 {
 		t.Errorf("volume-permissions VolumeMounts count = %d, want 1", len(volPermsInit.VolumeMounts))
