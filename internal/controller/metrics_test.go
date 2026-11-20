@@ -291,6 +291,24 @@ func TestMetricsRecorder_RecordStorageInfo(t *testing.T) {
 	m.RecordStorageInfo("test-cluster", "default", "pod-0", "main", info)
 }
 
+func TestMetricsRecorder_RecordStorageInfoKeepsCountsWhenUnknown(t *testing.T) {
+	m := NewMetricsRecorder()
+	labels := []string{"counts-cluster", "default", "pod-0", "main"}
+
+	m.RecordStorageInfo(labels[0], labels[1], labels[2], labels[3], &StorageInfo{VertexCount: 604, EdgeCount: 742251, HasCounts: true, MemoryRes: 1})
+	m.RecordStorageInfo(labels[0], labels[1], labels[2], labels[3], &StorageInfo{MemoryRes: 2})
+
+	if got := testutil.ToFloat64(storageVertexCountGauge.WithLabelValues(labels...)); got != 604 {
+		t.Errorf("vertex count = %v, want 604 kept when the new reading has no counts", got)
+	}
+	if got := testutil.ToFloat64(storageEdgeCountGauge.WithLabelValues(labels...)); got != 742251 {
+		t.Errorf("edge count = %v, want 742251 kept when the new reading has no counts", got)
+	}
+	if got := testutil.ToFloat64(storageMemoryResGauge.WithLabelValues(labels...)); got != 2 {
+		t.Errorf("memory_res = %v, want 2: other gauges still update", got)
+	}
+}
+
 func TestMetricsRecorder_DeleteInstanceStorageMetrics(t *testing.T) {
 	m := NewMetricsRecorder()
 

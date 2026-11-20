@@ -51,6 +51,8 @@ type MemgraphClusterReconciler struct {
 	Log                *zap.Logger
 	replicationManager *ReplicationManager
 	metrics            *MetricsRecorder
+	graphCounts        *graphCountCache
+	staleBackups       *staleBackupSchedule
 }
 
 // +kubebuilder:rbac:groups=memgraph.base14.io,resources=memgraphclusters,verbs=get;list;watch;create;update;patch;delete
@@ -275,13 +277,14 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 		log.Error("failed to update snapshot status", zap.Error(err))
 	}
 
+	desiredReplicas := cluster.Spec.Replicas
+	if desiredReplicas == 0 {
+		desiredReplicas = 3
+	}
+	streaming := replicationStreamingHealthy(desiredReplicas, registeredReplicas, healthyReplicas)
+
 	// 10. Run validation tests (only when cluster is running)
 	if cluster.Status.Phase == memgraphv1alpha1.ClusterPhaseRunning {
-		desiredReplicas := cluster.Spec.Replicas
-		if desiredReplicas == 0 {
-			desiredReplicas = 3
-		}
-		streaming := replicationStreamingHealthy(desiredReplicas, registeredReplicas, healthyReplicas)
 		if err := r.reconcileValidation(ctx, cluster, pods, writeInstance, streaming, log); err != nil {
 			log.Error("validation failed", zap.Error(err))
 		}
@@ -289,6 +292,8 @@ func (r *MemgraphClusterReconciler) reconcileResources(ctx context.Context, clus
 
 	// 11. Collect storage metrics from all running pods
 	r.collectStorageMetrics(ctx, cluster, pods, writeInstance, log)
+
+	r.reconcileStaleBackups(ctx, cluster, pods, healthKnown && streaming, log)
 
 	// 12. Update status
 	if err := r.updateStatus(ctx, cluster, pods, writeInstance, registeredReplicas, healthyReplicas); err != nil {
@@ -708,17 +713,11 @@ func (r *MemgraphClusterReconciler) collectStorageMetrics(
 	}
 
 	mgClient := r.replicationManager.Client()
-	var mainInfo *memgraph.StorageInfo
-	replicaInfos := make(map[string]*memgraph.StorageInfo)
+	infos := make(map[string]*memgraph.StorageInfo)
 
 	for _, pod := range pods {
 		if !isPodReady(&pod) {
 			continue
-		}
-
-		role := "replica"
-		if pod.Name == writeInstance {
-			role = "main"
 		}
 
 		info, err := mgClient.GetStorageInfo(ctx, cluster.Namespace, pod.Name)
@@ -728,13 +727,34 @@ func (r *MemgraphClusterReconciler) collectStorageMetrics(
 				zap.Error(err))
 			continue
 		}
+		infos[pod.Name] = info
+	}
 
-		r.metrics.RecordStorageInfo(cluster.Name, cluster.Namespace, pod.Name, role, info)
+	if r.graphCounts == nil {
+		r.graphCounts = newGraphCountCache(time.Now)
+	}
+	r.graphCounts.fill(cluster.Namespace+"/"+cluster.Name, infos, func(pod string) (graphCounts, error) {
+		vertices, edges, err := mgClient.GetGraphCounts(ctx, cluster.Namespace, pod)
+		if err != nil {
+			log.Debug("failed to count vertices and edges", zap.String("pod", pod), zap.Error(err))
+		}
+		return graphCounts{vertices: vertices, edges: edges}, err
+	})
+
+	var mainInfo *memgraph.StorageInfo
+	replicaInfos := make(map[string]*memgraph.StorageInfo)
+	for podName, info := range infos {
+		role := "replica"
+		if podName == writeInstance {
+			role = "main"
+		}
+
+		r.metrics.RecordStorageInfo(cluster.Name, cluster.Namespace, podName, role, info)
 
 		if role == "main" {
 			mainInfo = info
 		} else {
-			replicaInfos[pod.Name] = info
+			replicaInfos[podName] = info
 		}
 	}
 
@@ -743,10 +763,13 @@ func (r *MemgraphClusterReconciler) collectStorageMetrics(
 	// heartbeating. Stale series are cleared first so removed replicas do not
 	// keep reporting old drift values.
 	r.metrics.DeleteReplicationDriftMetrics(cluster.Name, cluster.Namespace)
-	if mainInfo == nil {
+	if mainInfo == nil || !mainInfo.HasCounts {
 		return
 	}
 	for podName, info := range replicaInfos {
+		if !info.HasCounts {
+			continue
+		}
 		// Use the Memgraph replica name (underscored pod name) so drift and
 		// replica-health metrics share the same `replica` label value
 		replicaName := r.replicationManager.getReplicaName(podName)

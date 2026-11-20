@@ -59,4 +59,6 @@ const (
 	EventReasonReconcileError = "ReconcileError"
 
 	EventReasonMemoryLimitAbovePodLimit = "MemoryLimitAbovePodLimit"
+
+	EventReasonRemovedStaleBackups = "RemovedStaleBackups"
 )

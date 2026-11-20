@@ -501,8 +501,10 @@ func (m *MetricsRecorder) RecordStorageInfo(cluster, namespace, instance, role s
 	if info == nil {
 		return
 	}
-	storageVertexCountGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.VertexCount))
-	storageEdgeCountGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.EdgeCount))
+	if info.HasCounts {
+		storageVertexCountGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.VertexCount))
+		storageEdgeCountGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.EdgeCount))
+	}
 	storageAverageDegreeGauge.WithLabelValues(cluster, namespace, instance, role).Set(info.AverageDegree)
 	storageMemoryResGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.MemoryRes))
 	storagePeakMemoryResGauge.WithLabelValues(cluster, namespace, instance, role).Set(float64(info.PeakMemoryRes))

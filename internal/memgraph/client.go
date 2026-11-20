@@ -167,6 +167,7 @@ type StorageInfo struct {
 	UnreleasedDeltaObjects int64
 	StorageMode            string
 	IsolationLevel         string
+	HasCounts              bool
 }
 
 // ShowReplicas returns the list of registered replicas from the main instance
@@ -248,6 +249,50 @@ func (c *Client) GetStorageInfo(ctx context.Context, namespace, podName string) 
 	return info, nil
 }
 
+func (c *Client) GetGraphCounts(ctx context.Context, namespace, podName string) (vertices, edges int64, err error) {
+	query := "MATCH (n) RETURN count(n) AS c UNION ALL MATCH ()-[r]->() RETURN count(r) AS c;"
+
+	output, err := c.ExecuteQuery(ctx, namespace, podName, query)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to count vertices and edges: %w", err)
+	}
+
+	counts, err := parseCountColumn(output)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(counts) != 2 {
+		return 0, 0, fmt.Errorf("expected vertex and edge counts, got %d values", len(counts))
+	}
+	return counts[0], counts[1], nil
+}
+
+func parseCountColumn(output string) ([]int64, error) {
+	lines := strings.Split(output, "\n")
+	counts := make([]int64, 0, len(lines))
+	header := true
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		if header {
+			header = false
+			continue
+		}
+		cell := strings.TrimSpace(strings.Trim(line, "|"))
+		n, err := strconv.ParseInt(cell, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("unexpected count value %q: %w", cell, err)
+		}
+		counts = append(counts, n)
+	}
+	if len(counts) == 0 {
+		return nil, fmt.Errorf("no count rows in output")
+	}
+	return counts, nil
+}
+
 // execInPod executes a command in a pod container
 func (c *Client) execInPod(ctx context.Context, namespace, podName, container string, cmd []string, stdin *strings.Reader) (string, string, error) {
 	req := c.clientset.CoreV1().RESTClient().Post().
@@ -317,6 +362,7 @@ func parseStorageInfoOutput(output string) *StorageInfo {
 					info.Name = value
 				case "vertex_count":
 					info.VertexCount, _ = strconv.ParseInt(value, 10, 64)
+					info.HasCounts = true
 				case "edge_count":
 					info.EdgeCount, _ = strconv.ParseInt(value, 10, 64)
 				case "average_degree":
@@ -329,11 +375,11 @@ func parseStorageInfoOutput(output string) *StorageInfo {
 					info.DiskUsage = parseMemoryValue(value)
 				case "memory_tracked":
 					info.MemoryTracked = parseMemoryValue(value)
-				case "allocation_limit":
+				case "allocation_limit", "memory_limit":
 					info.AllocationLimit = parseMemoryValue(value)
 				case "unreleased_delta_objects":
 					info.UnreleasedDeltaObjects, _ = strconv.ParseInt(value, 10, 64)
-				case "storage_mode":
+				case "storage_mode", "global_storage_mode":
 					info.StorageMode = value
 				case "global_isolation_level":
 					info.IsolationLevel = value

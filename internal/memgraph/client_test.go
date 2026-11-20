@@ -260,6 +260,123 @@ func TestParseStorageInfoOutput(t *testing.T) {
 	}
 }
 
+func TestParseStorageInfoOutputMemgraph314(t *testing.T) {
+	output := `+--------------------------------+--------------------------------+
+| storage info                   | value                          |
++--------------------------------+--------------------------------+
+| "vm_max_map_count"             | 262144                         |
+| "memory_res"                   | "384.02MiB"                    |
+| "peak_memory_res"              | "713.92MiB"                    |
+| "disk_usage"                   | "391.48MiB"                    |
+| "disk_available"               | "2.58GiB"                      |
+| "memory_tracked"               | "371.35MiB"                    |
+| "memory_limit"                 | "2.40GiB"                      |
+| "license_memory_limit"         | "unlimited"                    |
+| "query+graph_memory_tracked"   | "371.35MiB"                    |
+| "vector_index_memory_tracked"  | "0B"                           |
+| "global_isolation_level"       | "SNAPSHOT_ISOLATION"           |
+| "session_isolation_level"      | ""                             |
+| "next_session_isolation_level" | ""                             |
+| "global_storage_mode"          | "IN_MEMORY_TRANSACTIONAL"      |
++--------------------------------+--------------------------------+`
+
+	info := parseStorageInfoOutput(output)
+
+	if info.HasCounts {
+		t.Error("HasCounts = true, want false: 3.14 does not report vertex_count/edge_count")
+	}
+	if info.AllocationLimit != parseMemoryValue("2.40GiB") {
+		t.Errorf("AllocationLimit = %d, want memory_limit 2.40GiB (%d)", info.AllocationLimit, parseMemoryValue("2.40GiB"))
+	}
+	if info.StorageMode != "IN_MEMORY_TRANSACTIONAL" {
+		t.Errorf("StorageMode = %q, want IN_MEMORY_TRANSACTIONAL from global_storage_mode", info.StorageMode)
+	}
+	if info.MemoryRes != parseMemoryValue("384.02MiB") {
+		t.Errorf("MemoryRes = %d, want %d", info.MemoryRes, parseMemoryValue("384.02MiB"))
+	}
+}
+
+func TestParseStorageInfoOutputReportsCountsWhenPresent(t *testing.T) {
+	output := `+--------------------------------+----------------------------------------+
+| storage info                   | value                                  |
++--------------------------------+----------------------------------------+
+| "vertex_count"                 | 0                                      |
+| "edge_count"                   | 0                                      |
+| "memory_res"                   | "43.16MiB"                             |
++--------------------------------+----------------------------------------+`
+
+	if !parseStorageInfoOutput(output).HasCounts {
+		t.Error("HasCounts = false, want true when vertex_count is reported, even if it is 0")
+	}
+}
+
+func TestParseCountColumn(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		want    []int64
+		wantErr bool
+	}{
+		{
+			name: "vertices then edges",
+			output: `+--------+
+| c      |
++--------+
+| 604    |
+| 742251 |
++--------+`,
+			want: []int64{604, 742251},
+		},
+		{
+			name: "empty graph",
+			output: `+---+
+| c |
++---+
+| 0 |
+| 0 |
++---+`,
+			want: []int64{0, 0},
+		},
+		{
+			name:    "no rows",
+			output:  "",
+			wantErr: true,
+		},
+		{
+			name: "non numeric",
+			output: `+-----+
+| c   |
++-----+
+| abc |
++-----+`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseCountColumn(tt.output)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseCountColumn() = %v, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCountColumn() error = %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseCountColumn() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("parseCountColumn()[%d] = %d, want %d", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestParseMemoryValueEdgeCases(t *testing.T) {
 	tests := []struct {
 		name     string
