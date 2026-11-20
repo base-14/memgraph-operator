@@ -242,7 +242,7 @@ func TestBuildWriteService(t *testing.T) {
 			expectPodSelector: true,
 		},
 		{
-			name: "without write instance",
+			name: "without write instance selects no pod",
 			cluster: &memgraphv1alpha1.MemgraphCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
@@ -251,7 +251,7 @@ func TestBuildWriteService(t *testing.T) {
 				Spec: memgraphv1alpha1.MemgraphClusterSpec{},
 			},
 			writeInstanceName: "",
-			expectPodSelector: false,
+			expectPodSelector: true,
 		},
 	}
 

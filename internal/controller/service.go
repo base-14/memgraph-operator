@@ -81,9 +81,7 @@ func buildWriteService(cluster *memgraphv1alpha1.MemgraphCluster, writeInstanceN
 
 	// Selector to target the specific write pod
 	selector := labelsForCluster(cluster)
-	if writeInstanceName != "" {
-		selector["statefulset.kubernetes.io/pod-name"] = writeInstanceName
-	}
+	selector["statefulset.kubernetes.io/pod-name"] = writeInstanceName
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
